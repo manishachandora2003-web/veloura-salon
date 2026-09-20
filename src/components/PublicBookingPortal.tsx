@@ -165,6 +165,32 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
     }
   }, [staffList]);
 
+  // Active services fallback (ensures persistent Veloura 🎀 services are loaded)
+  const [activeServices, setActiveServices] = useState<Service[]>(services || []);
+  const [loadingServices, setLoadingServices] = useState<boolean>(!services || services.length === 0);
+
+  useEffect(() => {
+    if (services && services.length > 0) {
+      setActiveServices(services);
+      setLoadingServices(false);
+    } else {
+      setLoadingServices(true);
+      api
+        .getServices()
+        .then((res) => {
+          if (Array.isArray(res) && res.length > 0) {
+            setActiveServices(res);
+          }
+        })
+        .catch((err) => {
+          console.error('Error fetching services in PublicBookingPortal:', err);
+        })
+        .finally(() => {
+          setLoadingServices(false);
+        });
+    }
+  }, [services]);
+
   // Multi-service toggle handler
   const handleToggleService = (svc: Service, e?: React.MouseEvent) => {
     if (e) triggerCuteSparkle(e);
@@ -343,20 +369,62 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
 
   // Filter services by search and category
   const filteredServices = useMemo(() => {
-    return services.filter((s) => {
+    return activeServices.filter((s) => {
+      if (s.isActive === false) return false;
+
       const matchSearch =
         !serviceSearch.trim() ||
         s.name.toLowerCase().includes(serviceSearch.toLowerCase()) ||
         (s.categoryName || '').toLowerCase().includes(serviceSearch.toLowerCase()) ||
         (s.description || '').toLowerCase().includes(serviceSearch.toLowerCase());
 
-      const matchCat =
-        selectedCategoryTab === 'ALL' ||
-        (s.categoryName || '').toLowerCase().includes(selectedCategoryTab.toLowerCase());
+      if (!matchSearch) return false;
 
-      return matchSearch && matchCat;
+      if (selectedCategoryTab === 'ALL') return true;
+
+      const cat = (s.categoryName || '').toLowerCase();
+      const name = (s.name || '').toLowerCase();
+      const desc = (s.description || '').toLowerCase();
+      const tabLower = selectedCategoryTab.toLowerCase();
+
+      if (tabLower === 'nail') {
+        return (
+          cat.includes('manicure') ||
+          cat.includes('pedicure') ||
+          cat.includes('nail') ||
+          name.includes('manicure') ||
+          name.includes('pedicure') ||
+          name.includes('nail')
+        );
+      }
+
+      if (tabLower === 'spa') {
+        return (
+          name.includes('spa') ||
+          cat.includes('spa') ||
+          cat.includes('facial') ||
+          cat.includes('skin') ||
+          name.includes('massage') ||
+          name.includes('facial') ||
+          desc.includes('spa')
+        );
+      }
+
+      if (tabLower === 'hair') {
+        return cat.includes('hair') || name.includes('hair') || name.includes('blow dry');
+      }
+
+      if (tabLower === 'makeup') {
+        return cat.includes('makeup') || name.includes('makeup') || name.includes('bridal');
+      }
+
+      if (tabLower === 'waxing') {
+        return cat.includes('wax') || name.includes('wax');
+      }
+
+      return cat.includes(tabLower) || name.includes(tabLower);
     });
-  }, [services, serviceSearch, selectedCategoryTab]);
+  }, [activeServices, serviceSearch, selectedCategoryTab]);
 
   // Handle Form Submission from Review Step (Step 5)
   const handleConfirmBooking = async (e?: React.FormEvent) => {
@@ -730,11 +798,16 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                   })}
                 </div>
 
-                {filteredServices.length === 0 && (
+                {loadingServices ? (
+                  <div className="bg-white rounded-2xl p-8 text-center border border-pink-100 flex flex-col items-center justify-center space-y-3">
+                    <div className="w-8 h-8 border-3 border-pink-400 border-t-transparent rounded-full animate-spin"></div>
+                    <p className="text-[#7a485c] text-sm font-medium">Loading Veloura 🎀 services...</p>
+                  </div>
+                ) : filteredServices.length === 0 ? (
                   <div className="bg-white rounded-2xl p-8 text-center border border-pink-100">
                     <p className="text-[#7a485c] text-sm">No services found matching your search.</p>
                   </div>
-                )}
+                ) : null}
 
                 {/* SELECTED SERVICES SUMMARY DOCK */}
                 <div className="bg-white rounded-2xl p-5 border border-pink-200/80 shadow-xs space-y-4">
@@ -1771,7 +1844,7 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
 
             {/* Categorized Services List */}
             {categories.map((cat) => {
-              const catServices = services.filter((s) => s.categoryId === cat.id);
+              const catServices = activeServices.filter((s) => s.categoryId === cat.id || s.categoryName === cat.name);
               if (catServices.length === 0) return null;
 
               return (

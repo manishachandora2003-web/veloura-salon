@@ -117,6 +117,14 @@ export default function App() {
 
   const loadAllData = async () => {
     try {
+      // Promptly resolve public catalog to display services without waiting for full dashboard sync
+      api.getServices().then((svcs) => {
+        if (Array.isArray(svcs) && svcs.length > 0) setServices(svcs);
+      }).catch(() => {});
+      api.getCategories().then((cats) => {
+        if (Array.isArray(cats) && cats.length > 0) setCategories(cats);
+      }).catch(() => {});
+
       const [
         dash,
         svcs,

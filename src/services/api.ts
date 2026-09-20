@@ -129,7 +129,14 @@ export const api = {
     }).then((r) => handleResponse<SalonSettings>(r)),
 
   // Services & Categories
-  getServices: () => fetch(`${API_BASE}/services`).then((r) => handleResponse<Service[]>(r)),
+  getServices: () =>
+    fetch(`${API_BASE}/services`).then(async (r) => {
+      const data = await handleResponse<any>(r);
+      if (Array.isArray(data)) return data as Service[];
+      if (data && Array.isArray(data.services)) return data.services as Service[];
+      if (data && Array.isArray(data.data)) return data.data as Service[];
+      return [] as Service[];
+    }),
   createService: (data: Partial<Service>) =>
     fetch(`${API_BASE}/services`, {
       method: 'POST',

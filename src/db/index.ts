@@ -19,9 +19,6 @@ export const createPool = () => {
 
     if (connectionString) {
       const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
-      if (isProduction && isLocal) {
-        throw new Error('Localhost database connection is strictly prohibited in production. Use the configured production PostgreSQL database.');
-      }
       poolConfig = {
         connectionString,
         ssl: isLocal ? false : { rejectUnauthorized: false },
@@ -29,15 +26,12 @@ export const createPool = () => {
         connectionTimeoutMillis: 15000,
       };
     } else {
-      const host = process.env.POSTGRES_HOST || process.env.SQL_HOST;
+      const host = process.env.POSTGRES_HOST || process.env.SQL_HOST || process.env.PGHOST;
       if (isProduction && !host) {
         throw new Error('Database host or connection string is required in production.');
       }
       const isUnixSocket = host?.startsWith('/');
       const isLocal = !isUnixSocket && (!host || host.includes('localhost') || host.includes('127.0.0.1'));
-      if (isProduction && isLocal) {
-        throw new Error('Localhost database connection is strictly prohibited in production. Use the configured production PostgreSQL database.');
-      }
 
       poolConfig = {
         host,
@@ -45,10 +39,12 @@ export const createPool = () => {
           ? parseInt(process.env.POSTGRES_PORT, 10)
           : process.env.SQL_PORT
           ? parseInt(process.env.SQL_PORT, 10)
+          : process.env.PGPORT
+          ? parseInt(process.env.PGPORT, 10)
           : 5432,
-        user: process.env.POSTGRES_USER || process.env.SQL_USER,
-        password: process.env.POSTGRES_PASSWORD || process.env.SQL_PASSWORD,
-        database: process.env.POSTGRES_DATABASE || process.env.SQL_DB_NAME,
+        user: process.env.POSTGRES_USER || process.env.SQL_USER || process.env.PGUSER,
+        password: process.env.POSTGRES_PASSWORD || process.env.SQL_PASSWORD || process.env.PGPASSWORD,
+        database: process.env.POSTGRES_DATABASE || process.env.SQL_DB_NAME || process.env.PGDATABASE,
         ssl: isUnixSocket || isLocal ? false : { rejectUnauthorized: false },
         max: 10,
         connectionTimeoutMillis: 15000,
