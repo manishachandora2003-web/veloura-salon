@@ -32,322 +32,409 @@ import { eq, and, sql, notInArray, desc } from 'drizzle-orm';
 /**
  * Ensures all required relational database tables exist (idempotent DDL).
  */
+const TABLE_DDLS: string[] = [
+  // 1. users
+  `CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    uid TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT 'Salon User',
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'OWNER',
+    phone TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 2. salon_settings
+  `CREATE TABLE IF NOT EXISTS salon_settings (
+    id SERIAL PRIMARY KEY,
+    salon_name TEXT NOT NULL DEFAULT 'Veloura 🎀 Luxury Salon & Spa',
+    tagline TEXT DEFAULT 'Luxury Hair, Beauty & Wellness',
+    phone TEXT DEFAULT '+91 98765 43210',
+    email TEXT DEFAULT 'contact@veloura.in',
+    address TEXT DEFAULT 'Indiranagar 100ft Road, Bengaluru, Karnataka 560038',
+    gst_number TEXT DEFAULT '29AAAAA0000A1Z5',
+    gst_rate INTEGER NOT NULL DEFAULT 18,
+    tax_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    invoice_prefix TEXT NOT NULL DEFAULT 'VEL',
+    opening_time TEXT NOT NULL DEFAULT '09:00',
+    closing_time TEXT NOT NULL DEFAULT '21:00',
+    working_days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun',
+    default_appointment_duration INTEGER NOT NULL DEFAULT 30,
+    loyalty_points_per_100 INTEGER NOT NULL DEFAULT 1,
+    loyalty_point_value_inr INTEGER NOT NULL DEFAULT 1,
+    loyalty_min_redemption_points INTEGER NOT NULL DEFAULT 50,
+    accepted_payment_methods TEXT NOT NULL DEFAULT 'Cash,UPI,Card,Bank Transfer',
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 3. service_categories
+  `CREATE TABLE IF NOT EXISTS service_categories (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    display_order INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 4. services
+  `CREATE TABLE IF NOT EXISTS services (
+    id SERIAL PRIMARY KEY,
+    category_id INTEGER REFERENCES service_categories(id),
+    category_name TEXT NOT NULL,
+    name TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    duration INTEGER NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 5. customers
+  `CREATE TABLE IF NOT EXISTS customers (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL UNIQUE,
+    email TEXT,
+    dob TEXT,
+    gender TEXT,
+    address TEXT,
+    notes TEXT,
+    preferences TEXT,
+    loyalty_points INTEGER NOT NULL DEFAULT 0,
+    total_visits INTEGER NOT NULL DEFAULT 0,
+    total_spent INTEGER NOT NULL DEFAULT 0,
+    last_visit TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 6. staff
+  `CREATE TABLE IF NOT EXISTS staff (
+    id SERIAL PRIMARY KEY,
+    staff_code TEXT,
+    name TEXT NOT NULL,
+    gender TEXT NOT NULL DEFAULT 'Female',
+    phone TEXT NOT NULL,
+    email TEXT,
+    role TEXT NOT NULL DEFAULT 'Stylist',
+    specialization TEXT NOT NULL DEFAULT 'Hair & Styling',
+    joining_date TEXT NOT NULL DEFAULT '2025-01-01',
+    salary INTEGER NOT NULL DEFAULT 20000,
+    commission_percentage INTEGER NOT NULL DEFAULT 10,
+    working_days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat',
+    working_hours TEXT NOT NULL DEFAULT '10:00 AM - 07:00 PM',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 7. staff_schedules
+  `CREATE TABLE IF NOT EXISTS staff_schedules (
+    id SERIAL PRIMARY KEY,
+    staff_id INTEGER NOT NULL REFERENCES staff(id),
+    day_of_week TEXT NOT NULL,
+    start_time TEXT NOT NULL DEFAULT '10:00',
+    end_time TEXT NOT NULL DEFAULT '19:00',
+    is_working BOOLEAN NOT NULL DEFAULT TRUE
+  )`,
+  // 8. appointments
+  `CREATE TABLE IF NOT EXISTS appointments (
+    id SERIAL PRIMARY KEY,
+    booking_code TEXT,
+    source TEXT NOT NULL DEFAULT 'Walk-in',
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    customer_name TEXT NOT NULL,
+    customer_phone TEXT NOT NULL,
+    customer_email TEXT,
+    staff_id INTEGER NOT NULL REFERENCES staff(id),
+    staff_name TEXT NOT NULL,
+    date TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Booked',
+    payment_status TEXT NOT NULL DEFAULT 'Pending',
+    notes TEXT,
+    total_amount INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 9. appointment_services
+  `CREATE TABLE IF NOT EXISTS appointment_services (
+    id SERIAL PRIMARY KEY,
+    appointment_id INTEGER NOT NULL REFERENCES appointments(id),
+    service_id INTEGER NOT NULL REFERENCES services(id),
+    service_name TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    duration INTEGER NOT NULL
+  )`,
+  // 10. invoices
+  `CREATE TABLE IF NOT EXISTS invoices (
+    id SERIAL PRIMARY KEY,
+    invoice_number TEXT NOT NULL UNIQUE,
+    appointment_id INTEGER REFERENCES appointments(id),
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    customer_name TEXT NOT NULL,
+    customer_phone TEXT NOT NULL,
+    staff_id INTEGER REFERENCES staff(id),
+    staff_name TEXT,
+    date TEXT NOT NULL,
+    subtotal INTEGER NOT NULL,
+    discount INTEGER NOT NULL DEFAULT 0,
+    discount_reason TEXT,
+    tax_rate INTEGER NOT NULL DEFAULT 18,
+    tax_amount INTEGER NOT NULL DEFAULT 0,
+    grand_total INTEGER NOT NULL,
+    paid_amount INTEGER NOT NULL DEFAULT 0,
+    balance_amount INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'Pending',
+    payment_method TEXT NOT NULL DEFAULT 'UPI',
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 11. invoice_items
+  `CREATE TABLE IF NOT EXISTS invoice_items (
+    id SERIAL PRIMARY KEY,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+    service_id INTEGER REFERENCES services(id),
+    service_name TEXT NOT NULL,
+    staff_id INTEGER REFERENCES staff(id),
+    staff_name TEXT,
+    unit_price INTEGER NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    total INTEGER NOT NULL
+  )`,
+  // 12. payments
+  `CREATE TABLE IF NOT EXISTS payments (
+    id SERIAL PRIMARY KEY,
+    payment_number TEXT NOT NULL UNIQUE,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+    invoice_number TEXT NOT NULL,
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    customer_name TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    payment_method TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Paid',
+    transaction_reference TEXT,
+    notes TEXT,
+    date TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 13. expenses
+  `CREATE TABLE IF NOT EXISTS expenses (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    payment_method TEXT NOT NULL DEFAULT 'Bank Transfer',
+    description TEXT,
+    added_by TEXT NOT NULL DEFAULT 'Owner',
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 14. suppliers
+  `CREATE TABLE IF NOT EXISTS suppliers (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    contact_person TEXT,
+    phone TEXT NOT NULL,
+    email TEXT,
+    address TEXT,
+    gst_number TEXT,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 15. inventory_products
+  `CREATE TABLE IF NOT EXISTS inventory_products (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    sku TEXT NOT NULL UNIQUE,
+    supplier_id INTEGER REFERENCES suppliers(id),
+    supplier_name TEXT,
+    purchase_price INTEGER NOT NULL,
+    selling_price INTEGER NOT NULL,
+    current_stock INTEGER NOT NULL DEFAULT 0,
+    min_stock_level INTEGER NOT NULL DEFAULT 5,
+    unit TEXT NOT NULL DEFAULT 'Units',
+    expiry_date TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 16. inventory_movements
+  `CREATE TABLE IF NOT EXISTS inventory_movements (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES inventory_products(id),
+    product_name TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    previous_stock INTEGER NOT NULL,
+    new_stock INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    reason TEXT,
+    performed_by TEXT NOT NULL DEFAULT 'System',
+    date TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 17. packages
+  `CREATE TABLE IF NOT EXISTS packages (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    price INTEGER NOT NULL,
+    validity_days INTEGER NOT NULL DEFAULT 90,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 18. package_services
+  `CREATE TABLE IF NOT EXISTS package_services (
+    id SERIAL PRIMARY KEY,
+    package_id INTEGER NOT NULL REFERENCES packages(id),
+    service_id INTEGER NOT NULL REFERENCES services(id),
+    service_name TEXT NOT NULL,
+    sessions_count INTEGER NOT NULL DEFAULT 1
+  )`,
+  // 19. customer_packages
+  `CREATE TABLE IF NOT EXISTS customer_packages (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    customer_name TEXT NOT NULL,
+    package_id INTEGER NOT NULL REFERENCES packages(id),
+    package_name TEXT NOT NULL,
+    purchase_date TEXT NOT NULL,
+    expiry_date TEXT NOT NULL,
+    price_paid INTEGER NOT NULL,
+    total_services INTEGER NOT NULL,
+    services_used INTEGER NOT NULL DEFAULT 0,
+    services_remaining INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Active',
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 20. offers
+  `CREATE TABLE IF NOT EXISTS offers (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    discount_type TEXT NOT NULL,
+    discount_value INTEGER NOT NULL,
+    min_bill_amount INTEGER DEFAULT 0,
+    service_category TEXT DEFAULT 'ALL',
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 21. loyalty_accounts
+  `CREATE TABLE IF NOT EXISTS loyalty_accounts (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER NOT NULL UNIQUE REFERENCES customers(id),
+    customer_name TEXT NOT NULL,
+    current_points INTEGER NOT NULL DEFAULT 0,
+    total_points_earned INTEGER NOT NULL DEFAULT 0,
+    total_points_redeemed INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 22. loyalty_transactions
+  `CREATE TABLE IF NOT EXISTS loyalty_transactions (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    type TEXT NOT NULL,
+    points INTEGER NOT NULL,
+    invoice_id INTEGER REFERENCES invoices(id),
+    description TEXT NOT NULL,
+    date TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 23. notifications
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    reference_id TEXT,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+  // 24. activity_logs
+  `CREATE TABLE IF NOT EXISTS activity_logs (
+    id SERIAL PRIMARY KEY,
+    user_name TEXT NOT NULL DEFAULT 'System',
+    user_role TEXT NOT NULL DEFAULT 'OWNER',
+    action TEXT NOT NULL,
+    description TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`
+];
+
+const COLUMN_ALIGNMENTS: string[] = [
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS category_id INTEGER REFERENCES service_categories(id)`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS category_name TEXT NOT NULL DEFAULT 'General'`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS price INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS duration INTEGER NOT NULL DEFAULT 30`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS description TEXT`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`,
+  `ALTER TABLE services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
+
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS staff_code TEXT`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'Female'`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS email TEXT`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'Stylist'`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS specialization TEXT NOT NULL DEFAULT 'Hair & Styling'`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS joining_date TEXT NOT NULL DEFAULT '2025-01-01'`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS salary INTEGER NOT NULL DEFAULT 20000`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS commission_percentage INTEGER NOT NULL DEFAULT 10`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS working_days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat'`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS working_hours TEXT NOT NULL DEFAULT '10:00 AM - 07:00 PM'`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`,
+  `ALTER TABLE staff ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
+
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS salon_name TEXT NOT NULL DEFAULT 'Veloura 🎀 Luxury Salon & Spa'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS tagline TEXT DEFAULT 'Luxury Hair, Beauty & Wellness'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT '+91 98765 43210'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS email TEXT DEFAULT 'contact@veloura.in'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS address TEXT DEFAULT 'Indiranagar 100ft Road, Bengaluru, Karnataka 560038'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS gst_number TEXT DEFAULT '29AAAAA0000A1Z5'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS gst_rate INTEGER NOT NULL DEFAULT 18`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS tax_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'INR'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS invoice_prefix TEXT NOT NULL DEFAULT 'VEL'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS opening_time TEXT NOT NULL DEFAULT '09:00'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS closing_time TEXT NOT NULL DEFAULT '21:00'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS working_days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS default_appointment_duration INTEGER NOT NULL DEFAULT 30`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS loyalty_points_per_100 INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS loyalty_point_value_inr INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS loyalty_min_redemption_points INTEGER NOT NULL DEFAULT 50`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS accepted_payment_methods TEXT NOT NULL DEFAULT 'Cash,UPI,Card,Bank Transfer'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
+
+  `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS description TEXT`,
+  `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0`,
+  `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`,
+];
+
 async function ensureTablesCreated() {
-  try {
-    const existing = await db.execute(sql`SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'salon_settings' LIMIT 1;`);
-    if (existing && existing.rows && existing.rows.length > 0) {
-      return;
+  for (const ddl of TABLE_DDLS) {
+    try {
+      await db.execute(sql.raw(ddl));
+    } catch (err: any) {
+      // If table creation fails due to existing table/constraint or permissions, continue to next
+      console.warn('Note on table DDL:', err?.message || err);
     }
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        uid TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL DEFAULT 'Salon User',
-        email TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'OWNER',
-        phone TEXT,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS salon_settings (
-        id SERIAL PRIMARY KEY,
-        salon_name TEXT NOT NULL DEFAULT 'Veloura 🎀 Luxury Salon & Spa',
-        tagline TEXT DEFAULT 'Luxury Hair, Beauty & Wellness',
-        phone TEXT DEFAULT '+91 98765 43210',
-        email TEXT DEFAULT 'contact@veloura.in',
-        address TEXT DEFAULT 'Indiranagar 100ft Road, Bengaluru, Karnataka 560038',
-        gst_number TEXT DEFAULT '29AAAAA0000A1Z5',
-        gst_rate INTEGER NOT NULL DEFAULT 18,
-        tax_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-        currency TEXT NOT NULL DEFAULT 'INR',
-        invoice_prefix TEXT NOT NULL DEFAULT 'VEL',
-        opening_time TEXT NOT NULL DEFAULT '09:00',
-        closing_time TEXT NOT NULL DEFAULT '21:00',
-        working_days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun',
-        default_appointment_duration INTEGER NOT NULL DEFAULT 30,
-        loyalty_points_per_100 INTEGER NOT NULL DEFAULT 1,
-        loyalty_point_value_inr INTEGER NOT NULL DEFAULT 1,
-        loyalty_min_redemption_points INTEGER NOT NULL DEFAULT 50,
-        accepted_payment_methods TEXT NOT NULL DEFAULT 'Cash,UPI,Card,Bank Transfer',
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS service_categories (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        description TEXT,
-        display_order INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS services (
-        id SERIAL PRIMARY KEY,
-        category_id INTEGER REFERENCES service_categories(id),
-        category_name TEXT NOT NULL,
-        name TEXT NOT NULL,
-        price INTEGER NOT NULL,
-        duration INTEGER NOT NULL,
-        description TEXT,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS customers (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        phone TEXT NOT NULL UNIQUE,
-        email TEXT,
-        dob TEXT,
-        gender TEXT,
-        address TEXT,
-        notes TEXT,
-        preferences TEXT,
-        loyalty_points INTEGER NOT NULL DEFAULT 0,
-        total_visits INTEGER NOT NULL DEFAULT 0,
-        total_spent INTEGER NOT NULL DEFAULT 0,
-        last_visit TIMESTAMP,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS staff (
-        id SERIAL PRIMARY KEY,
-        staff_code TEXT,
-        name TEXT NOT NULL,
-        gender TEXT NOT NULL DEFAULT 'Female',
-        phone TEXT NOT NULL,
-        email TEXT,
-        role TEXT NOT NULL DEFAULT 'Stylist',
-        specialization TEXT NOT NULL DEFAULT 'Hair & Styling',
-        joining_date TEXT NOT NULL DEFAULT '2025-01-01',
-        salary INTEGER NOT NULL DEFAULT 20000,
-        commission_percentage INTEGER NOT NULL DEFAULT 10,
-        working_days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun',
-        working_hours TEXT NOT NULL DEFAULT '09:00 - 21:00',
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS staff_schedules (
-        id SERIAL PRIMARY KEY,
-        staff_id INTEGER NOT NULL REFERENCES staff(id),
-        date TEXT NOT NULL,
-        is_working BOOLEAN NOT NULL DEFAULT TRUE,
-        shift_start TEXT NOT NULL DEFAULT '09:00',
-        shift_end TEXT NOT NULL DEFAULT '21:00',
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS appointments (
-        id SERIAL PRIMARY KEY,
-        booking_code TEXT,
-        source TEXT NOT NULL DEFAULT 'Online Booking',
-        customer_id INTEGER NOT NULL REFERENCES customers(id),
-        customer_name TEXT NOT NULL,
-        customer_phone TEXT NOT NULL,
-        customer_email TEXT,
-        staff_id INTEGER NOT NULL REFERENCES staff(id),
-        staff_name TEXT NOT NULL,
-        date TEXT NOT NULL,
-        start_time TEXT NOT NULL,
-        end_time TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'Confirmed',
-        payment_status TEXT NOT NULL DEFAULT 'Pending',
-        notes TEXT,
-        total_amount INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS appointment_services (
-        id SERIAL PRIMARY KEY,
-        appointment_id INTEGER NOT NULL REFERENCES appointments(id),
-        service_id INTEGER NOT NULL REFERENCES services(id),
-        service_name TEXT NOT NULL,
-        price INTEGER NOT NULL,
-        duration INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS invoices (
-        id SERIAL PRIMARY KEY,
-        invoice_number TEXT NOT NULL UNIQUE,
-        appointment_id INTEGER REFERENCES appointments(id),
-        customer_id INTEGER NOT NULL REFERENCES customers(id),
-        customer_name TEXT NOT NULL,
-        customer_phone TEXT NOT NULL,
-        staff_id INTEGER REFERENCES staff(id),
-        staff_name TEXT,
-        date TEXT NOT NULL,
-        subtotal INTEGER NOT NULL,
-        discount INTEGER NOT NULL DEFAULT 0,
-        discount_reason TEXT,
-        tax_rate INTEGER NOT NULL DEFAULT 18,
-        tax_amount INTEGER NOT NULL DEFAULT 0,
-        grand_total INTEGER NOT NULL,
-        paid_amount INTEGER NOT NULL DEFAULT 0,
-        balance_amount INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'Pending',
-        payment_method TEXT NOT NULL DEFAULT 'Cash',
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS invoice_items (
-        id SERIAL PRIMARY KEY,
-        invoice_id INTEGER NOT NULL REFERENCES invoices(id),
-        service_id INTEGER REFERENCES services(id),
-        service_name TEXT NOT NULL,
-        staff_id INTEGER REFERENCES staff(id),
-        staff_name TEXT,
-        unit_price INTEGER NOT NULL,
-        quantity INTEGER NOT NULL DEFAULT 1,
-        total INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS payments (
-        id SERIAL PRIMARY KEY,
-        payment_number TEXT NOT NULL UNIQUE,
-        invoice_id INTEGER NOT NULL REFERENCES invoices(id),
-        invoice_number TEXT NOT NULL,
-        customer_id INTEGER NOT NULL REFERENCES customers(id),
-        customer_name TEXT NOT NULL,
-        amount INTEGER NOT NULL,
-        payment_method TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'Successful',
-        transaction_reference TEXT,
-        notes TEXT,
-        date TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS expenses (
-        id SERIAL PRIMARY KEY,
-        title TEXT NOT NULL,
-        category TEXT NOT NULL,
-        amount INTEGER NOT NULL,
-        date TEXT NOT NULL,
-        payment_method TEXT NOT NULL DEFAULT 'Cash',
-        description TEXT,
-        notes TEXT,
-        vendor_name TEXT,
-        added_by TEXT NOT NULL DEFAULT 'Admin',
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS suppliers (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        contact_person TEXT,
-        phone TEXT NOT NULL,
-        email TEXT,
-        address TEXT,
-        gst_number TEXT,
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS inventory_products (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        category TEXT NOT NULL,
-        sku TEXT NOT NULL UNIQUE,
-        supplier_id INTEGER REFERENCES suppliers(id),
-        supplier_name TEXT,
-        purchase_price INTEGER NOT NULL,
-        selling_price INTEGER NOT NULL,
-        current_stock INTEGER NOT NULL DEFAULT 0,
-        min_stock_level INTEGER NOT NULL DEFAULT 5,
-        unit TEXT NOT NULL DEFAULT 'Bottle',
-        expiry_date TEXT,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS inventory_movements (
-        id SERIAL PRIMARY KEY,
-        product_id INTEGER NOT NULL REFERENCES inventory_products(id),
-        product_name TEXT NOT NULL,
-        quantity INTEGER NOT NULL,
-        previous_stock INTEGER NOT NULL,
-        new_stock INTEGER NOT NULL,
-        type TEXT NOT NULL,
-        reason TEXT,
-        performed_by TEXT NOT NULL DEFAULT 'Admin',
-        date TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS packages (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT,
-        price INTEGER NOT NULL,
-        validity_days INTEGER NOT NULL DEFAULT 365,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS package_services (
-        id SERIAL PRIMARY KEY,
-        package_id INTEGER NOT NULL REFERENCES packages(id),
-        service_id INTEGER NOT NULL REFERENCES services(id),
-        service_name TEXT NOT NULL,
-        sessions_count INTEGER NOT NULL DEFAULT 1
-      );
-      CREATE TABLE IF NOT EXISTS customer_packages (
-        id SERIAL PRIMARY KEY,
-        customer_id INTEGER NOT NULL REFERENCES customers(id),
-        package_id INTEGER NOT NULL REFERENCES packages(id),
-        purchase_date TEXT NOT NULL,
-        expiry_date TEXT NOT NULL,
-        remaining_sessions TEXT NOT NULL,
-        total_paid INTEGER NOT NULL,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE
-      );
-      CREATE TABLE IF NOT EXISTS offers (
-        id SERIAL PRIMARY KEY,
-        title TEXT NOT NULL,
-        code TEXT NOT NULL UNIQUE,
-        discount_type TEXT NOT NULL DEFAULT 'PERCENTAGE',
-        discount_value INTEGER NOT NULL,
-        min_bill_amount INTEGER NOT NULL DEFAULT 0,
-        service_category TEXT NOT NULL DEFAULT 'All',
-        start_date TEXT NOT NULL,
-        end_date TEXT NOT NULL,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        description TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS loyalty_accounts (
-        id SERIAL PRIMARY KEY,
-        customer_id INTEGER NOT NULL UNIQUE REFERENCES customers(id),
-        customer_name TEXT NOT NULL,
-        current_points INTEGER NOT NULL DEFAULT 0,
-        total_points_earned INTEGER NOT NULL DEFAULT 0,
-        total_points_redeemed INTEGER NOT NULL DEFAULT 0,
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS loyalty_transactions (
-        id SERIAL PRIMARY KEY,
-        customer_id INTEGER NOT NULL REFERENCES customers(id),
-        type TEXT NOT NULL,
-        points INTEGER NOT NULL,
-        invoice_id INTEGER REFERENCES invoices(id),
-        description TEXT NOT NULL,
-        date TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS notifications (
-        id SERIAL PRIMARY KEY,
-        type TEXT NOT NULL,
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        reference_id TEXT,
-        is_read BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS activity_logs (
-        id SERIAL PRIMARY KEY,
-        user_name TEXT NOT NULL DEFAULT 'Admin',
-        user_role TEXT NOT NULL DEFAULT 'OWNER',
-        action TEXT NOT NULL,
-        description TEXT NOT NULL,
-        entity_type TEXT NOT NULL,
-        entity_id TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-  } catch (err) {
-    console.warn('Note on table creation:', err);
+  }
+
+  for (const colDdl of COLUMN_ALIGNMENTS) {
+    try {
+      await db.execute(sql.raw(colDdl));
+    } catch (err: any) {
+      // Column may already exist or schema already aligned
+    }
   }
 }
 
@@ -427,11 +514,25 @@ export async function initializeDatabase() {
       }
       console.log(`Seeded all ${PREDEFINED_SERVICES.length} predefined services.`);
     } else {
-      // Keep prices in sync with the 50% increased values
+      // Keep prices in sync with the 50% increased values and insert any missing services
+      const existingNames = new Set(existingServices.map((s) => s.name));
       for (const s of PREDEFINED_SERVICES) {
-        await db.update(services)
-          .set({ price: s.price })
-          .where(eq(services.name, s.name));
+        if (!existingNames.has(s.name)) {
+          const catId = categoryMap.get(s.category) || null;
+          await db.insert(services).values({
+            categoryId: catId,
+            categoryName: s.category,
+            name: s.name,
+            price: s.price,
+            duration: s.duration,
+            description: s.description,
+            isActive: true,
+          });
+        } else {
+          await db.update(services)
+            .set({ price: s.price })
+            .where(eq(services.name, s.name));
+        }
       }
     }
 

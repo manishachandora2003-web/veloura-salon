@@ -40,19 +40,31 @@ export const apiRouter = Router();
 
 // Auto-initialize on first request
 let isInitialized = false;
+let initPromise: Promise<void> | null = null;
+
 async function ensureDbInit() {
-  if (!isInitialized) {
-    try {
-      await initializeDatabase();
-      isInitialized = true;
-    } catch (e) {
-      console.error('Auto-initialization error:', e);
-    }
+  if (isInitialized) return;
+  if (!initPromise) {
+    initPromise = (async () => {
+      try {
+        await initializeDatabase();
+        isInitialized = true;
+      } catch (e: any) {
+        console.error('Auto-initialization error:', e?.message || e);
+        initPromise = null;
+        throw e;
+      }
+    })();
   }
+  return initPromise;
 }
 
 apiRouter.use(async (req, res, next) => {
-  await ensureDbInit();
+  try {
+    await ensureDbInit();
+  } catch (err: any) {
+    console.warn('Initial DB init attempt warning:', err?.message || err);
+  }
   next();
 });
 
@@ -98,16 +110,46 @@ function requireStaffOrAdminAuth(req: Request, res: Response): boolean {
 // ==========================================
 // 1. HEALTH & INITIALIZATION / DEMO DATA
 // ==========================================
-apiRouter.get('/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+apiRouter.get('/health', async (req, res) => {
+  let dbStatus = 'disconnected';
+  let servicesCount = 0;
+  let staffCount = 0;
+  try {
+    const s = await db.select({ count: sql<number>`count(*)` }).from(services);
+    servicesCount = Number(s[0]?.count || 0);
+    const st = await db.select({ count: sql<number>`count(*)` }).from(staff);
+    staffCount = Number(st[0]?.count || 0);
+    dbStatus = 'connected';
+  } catch (err: any) {
+    dbStatus = `error: ${err?.message || err}`;
+  }
+  res.json({
+    status: 'ok',
+    database: dbStatus,
+    servicesCount,
+    staffCount,
+    time: new Date().toISOString(),
+  });
 });
 
-apiRouter.post('/init', async (req, res) => {
+apiRouter.all('/init', async (req, res) => {
   try {
-    await initializeDatabase();
-    res.json({ success: true, message: 'Database verified and initialized with 31 services.' });
+    const result = await initializeDatabase();
+    const allServices = await db.select().from(services);
+    const allStaff = await db.select().from(staff);
+    res.json({
+      success: true,
+      message: 'Database verified and initialized successfully.',
+      servicesCount: allServices.length,
+      staffCount: allStaff.length,
+      result,
+    });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('Error during /init:', error);
+    res.status(500).json({
+      error: error?.message,
+      detail: error?.cause?.message,
+    });
   }
 });
 
@@ -319,7 +361,7 @@ apiRouter.get('/auth/verify', async (req, res) => {
 // 4. Safe Public Staff List (no salaries, no internal notes)
 apiRouter.get('/staff/public', async (req, res) => {
   try {
-    const allStaff = await db.select({
+    let allStaff = await db.select({
       id: staff.id,
       staffCode: staff.staffCode,
       name: staff.name,
@@ -331,9 +373,44 @@ apiRouter.get('/staff/public', async (req, res) => {
       isActive: staff.isActive,
     }).from(staff).where(eq(staff.isActive, true));
 
+    if (allStaff.length === 0) {
+      await initializeDatabase();
+      allStaff = await db.select({
+        id: staff.id,
+        staffCode: staff.staffCode,
+        name: staff.name,
+        gender: staff.gender,
+        role: staff.role,
+        specialization: staff.specialization,
+        workingDays: staff.workingDays,
+        workingHours: staff.workingHours,
+        isActive: staff.isActive,
+      }).from(staff).where(eq(staff.isActive, true));
+    }
+
     res.json(allStaff);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    try {
+      await initializeDatabase();
+      const allStaff = await db.select({
+        id: staff.id,
+        staffCode: staff.staffCode,
+        name: staff.name,
+        gender: staff.gender,
+        role: staff.role,
+        specialization: staff.specialization,
+        workingDays: staff.workingDays,
+        workingHours: staff.workingHours,
+        isActive: staff.isActive,
+      }).from(staff).where(eq(staff.isActive, true));
+      return res.json(allStaff);
+    } catch (retryErr: any) {
+      console.error('Error fetching public staff:', retryErr);
+      res.status(500).json({
+        error: retryErr?.message || error?.message,
+        detail: retryErr?.cause?.message || error?.cause?.message,
+      });
+    }
   }
 });
 
@@ -682,10 +759,24 @@ apiRouter.get('/dashboard', async (req, res) => {
 // ==========================================
 apiRouter.get('/settings', async (req, res) => {
   try {
-    const list = await db.select().from(salonSettings).limit(1);
+    let list = await db.select().from(salonSettings).limit(1);
+    if (list.length === 0) {
+      await initializeDatabase();
+      list = await db.select().from(salonSettings).limit(1);
+    }
     res.json(list[0] || {});
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    try {
+      await initializeDatabase();
+      const list = await db.select().from(salonSettings).limit(1);
+      return res.json(list[0] || {});
+    } catch (retryErr: any) {
+      console.error('Error fetching settings:', retryErr);
+      res.status(500).json({
+        error: retryErr?.message || error?.message,
+        detail: retryErr?.cause?.message || error?.cause?.message,
+      });
+    }
   }
 });
 
@@ -735,10 +826,24 @@ apiRouter.put('/settings', async (req, res) => {
 // ==========================================
 apiRouter.get('/services', async (req, res) => {
   try {
-    const list = await db.select().from(services).orderBy(services.categoryName, services.name);
+    let list = await db.select().from(services).orderBy(services.categoryName, services.name);
+    if (list.length === 0) {
+      await initializeDatabase();
+      list = await db.select().from(services).orderBy(services.categoryName, services.name);
+    }
     res.json(list);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    try {
+      await initializeDatabase();
+      const list = await db.select().from(services).orderBy(services.categoryName, services.name);
+      return res.json(list);
+    } catch (retryErr: any) {
+      console.error('Error fetching services:', retryErr);
+      res.status(500).json({
+        error: retryErr?.message || error?.message,
+        detail: retryErr?.cause?.message || error?.cause?.message,
+      });
+    }
   }
 });
 
@@ -809,10 +914,24 @@ apiRouter.delete('/services/:id', async (req, res) => {
 
 apiRouter.get('/categories', async (req, res) => {
   try {
-    const cats = await db.select().from(serviceCategories).orderBy(serviceCategories.displayOrder);
+    let cats = await db.select().from(serviceCategories).orderBy(serviceCategories.displayOrder);
+    if (cats.length === 0) {
+      await initializeDatabase();
+      cats = await db.select().from(serviceCategories).orderBy(serviceCategories.displayOrder);
+    }
     res.json(cats);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    try {
+      await initializeDatabase();
+      const cats = await db.select().from(serviceCategories).orderBy(serviceCategories.displayOrder);
+      return res.json(cats);
+    } catch (retryErr: any) {
+      console.error('Error fetching categories:', retryErr);
+      res.status(500).json({
+        error: retryErr?.message || error?.message,
+        detail: retryErr?.cause?.message || error?.cause?.message,
+      });
+    }
   }
 });
 
@@ -2665,7 +2784,14 @@ apiRouter.get('/offers', async (req, res) => {
     const list = await db.select().from(offers).orderBy(desc(offers.id));
     res.json(list);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    try {
+      await initializeDatabase();
+      const list = await db.select().from(offers).orderBy(desc(offers.id));
+      return res.json(list);
+    } catch (retryErr: any) {
+      console.error('Error fetching offers:', retryErr);
+      res.json([]); // Return empty array gracefully if offers table is empty or querying
+    }
   }
 });
 

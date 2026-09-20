@@ -8,7 +8,11 @@ declare global {
 
 export const createPool = () => {
   if (!global._postgresPool) {
-    const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL;
+    const connectionString =
+      process.env.POSTGRES_URL ||
+      process.env.DATABASE_URL ||
+      process.env.POSTGRES_URL_NON_POOLING ||
+      process.env.POSTGRES_PRISMA_URL;
 
     let poolConfig: PoolConfig;
 
@@ -21,15 +25,20 @@ export const createPool = () => {
         connectionTimeoutMillis: 15000,
       };
     } else {
-      const isUnixSocket = process.env.SQL_HOST?.startsWith('/');
-      const isLocal = !process.env.SQL_HOST || process.env.SQL_HOST.includes('localhost') || process.env.SQL_HOST.includes('127.0.0.1');
+      const host = process.env.POSTGRES_HOST || process.env.SQL_HOST;
+      const isUnixSocket = host?.startsWith('/');
+      const isLocal = !host || host.includes('localhost') || host.includes('127.0.0.1');
 
       poolConfig = {
-        host: process.env.SQL_HOST,
-        port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
-        user: process.env.SQL_USER,
-        password: process.env.SQL_PASSWORD,
-        database: process.env.SQL_DB_NAME,
+        host,
+        port: process.env.POSTGRES_PORT
+          ? parseInt(process.env.POSTGRES_PORT, 10)
+          : process.env.SQL_PORT
+          ? parseInt(process.env.SQL_PORT, 10)
+          : 5432,
+        user: process.env.POSTGRES_USER || process.env.SQL_USER,
+        password: process.env.POSTGRES_PASSWORD || process.env.SQL_PASSWORD,
+        database: process.env.POSTGRES_DATABASE || process.env.SQL_DB_NAME,
         ssl: isUnixSocket || isLocal ? false : { rejectUnauthorized: false },
         max: 10,
         connectionTimeoutMillis: 15000,
