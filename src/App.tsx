@@ -36,7 +36,8 @@ import { NotificationsModal } from './components/NotificationsModal.tsx';
 import { PublicBookingPortal } from './components/PublicBookingPortal.tsx';
 import { StaffDashboard } from './components/StaffDashboard.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
-import { Globe, Shield, ArrowRight, Scissors, Lock, LogOut, ShieldAlert } from 'lucide-react';
+import { CuteAnimationProvider } from './components/CuteSparkleEffect.tsx';
+import { Globe, Shield, ArrowRight, Scissors, Lock, LogOut, ShieldAlert, Sparkles } from 'lucide-react';
 
 export default function App() {
   const [portalMode, setPortalMode] = useState<'public' | 'admin' | 'staff'>(() => {
@@ -259,53 +260,55 @@ export default function App() {
   // 1. PUBLIC CUSTOMER WEBSITE
   if (portalMode === 'public') {
     return (
-      <div className="relative min-h-screen bg-slate-50">
-        {/* Salon Owner & Staff switcher top bar */}
-        <div className="bg-slate-900 text-white text-xs px-4 py-1.5 flex items-center justify-between border-b border-slate-800">
-          <div className="flex items-center space-x-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="text-slate-300 font-medium">Public Customer Booking Website</span>
-            <span className="hidden sm:inline text-slate-500">• 0-login required for customer appointments</span>
+      <CuteAnimationProvider>
+        <div className="relative min-h-screen bg-[#fdf7f8]">
+          {/* Salon Owner & Staff switcher top bar */}
+          <div className="bg-[#2a1720] text-white text-xs px-4 py-1.5 flex items-center justify-between border-b border-[#3d2330]">
+            <div className="flex items-center space-x-2">
+              <span className="h-2 w-2 rounded-full bg-pink-400 animate-pulse"></span>
+              <span className="text-pink-100 font-medium">Veloura 🎀 Public Customer Website</span>
+              <span className="hidden sm:inline text-pink-200/60">• Instant Online Appointments (No Login Required)</span>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <button
+                id="top-switch-to-staff-btn"
+                onClick={handleSwitchToStaff}
+                className="text-pink-100 hover:text-white font-bold flex items-center space-x-1 cursor-pointer bg-[#3d2330] hover:bg-[#4d2d3e] px-2.5 py-0.5 rounded-md transition-colors"
+              >
+                <Scissors className="h-3 w-3 mr-0.5 text-pink-300" />
+                <span>Staff Portal</span>
+              </button>
+
+              <button
+                id="top-switch-to-admin-btn"
+                onClick={handleSwitchToAdmin}
+                className="text-rose-200 hover:text-white font-bold flex items-center space-x-1 cursor-pointer bg-[#4a2638] hover:bg-[#5a3045] px-2.5 py-0.5 rounded-md transition-colors"
+              >
+                <Shield className="h-3 w-3 mr-0.5 text-pink-300" />
+                <span>Owner Dashboard</span>
+                <ArrowRight className="h-3 w-3 ml-0.5" />
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-2">
-            <button
-              id="top-switch-to-staff-btn"
-              onClick={handleSwitchToStaff}
-              className="text-slate-300 hover:text-white font-bold flex items-center space-x-1 cursor-pointer bg-slate-800 hover:bg-slate-700 px-2.5 py-0.5 rounded-md transition-colors"
-            >
-              <Scissors className="h-3 w-3 mr-0.5 text-amber-400" />
-              <span>Staff Portal</span>
-            </button>
+          <PublicBookingPortal
+            services={services}
+            categories={categories}
+            staffList={staffList}
+            settings={settings}
+            onSwitchToAdmin={handleSwitchToAdmin}
+            onSwitchToStaff={handleSwitchToStaff}
+          />
 
-            <button
-              id="top-switch-to-admin-btn"
-              onClick={handleSwitchToAdmin}
-              className="text-amber-300 hover:text-amber-200 font-bold flex items-center space-x-1 cursor-pointer bg-slate-800 hover:bg-slate-700 px-2.5 py-0.5 rounded-md transition-colors"
-            >
-              <Shield className="h-3 w-3 mr-0.5" />
-              <span>Owner Dashboard</span>
-              <ArrowRight className="h-3 w-3 ml-0.5" />
-            </button>
-          </div>
+          <AuthModal
+            isOpen={showAuthModal}
+            initialType={authModalType}
+            onClose={() => setShowAuthModal(false)}
+            onSuccess={handleAuthSuccess}
+          />
         </div>
-
-        <PublicBookingPortal
-          services={services}
-          categories={categories}
-          staffList={staffList}
-          settings={settings}
-          onSwitchToAdmin={handleSwitchToAdmin}
-          onSwitchToStaff={handleSwitchToStaff}
-        />
-
-        <AuthModal
-          isOpen={showAuthModal}
-          initialType={authModalType}
-          onClose={() => setShowAuthModal(false)}
-          onSuccess={handleAuthSuccess}
-        />
-      </div>
+      </CuteAnimationProvider>
     );
   }
 

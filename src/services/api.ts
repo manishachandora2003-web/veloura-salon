@@ -225,6 +225,7 @@ export const api = {
     serviceIds?: number[];
     duration?: number;
     staffId?: number | 'ANY';
+    staffAssignments?: Record<number, number | 'ANY'>;
   }) => {
     const q = new URLSearchParams();
     q.append('date', params.date);
@@ -235,6 +236,9 @@ export const api = {
     }
     if (params.duration) q.append('duration', String(params.duration));
     if (params.staffId) q.append('staffId', String(params.staffId));
+    if (params.staffAssignments && Object.keys(params.staffAssignments).length > 0) {
+      q.append('staffAssignments', JSON.stringify(params.staffAssignments));
+    }
     return fetch(`${API_BASE}/appointments/availability?${q.toString()}`).then((r) =>
       handleResponse<{
         date: string;
@@ -248,6 +252,7 @@ export const api = {
     serviceId?: number;
     serviceIds?: number[];
     staffId?: number | 'ANY';
+    staffAssignments?: Record<number, number | 'ANY'>;
     date: string;
     startTime: string;
     customerName: string;
@@ -267,6 +272,20 @@ export const api = {
         services?: Service[];
         service?: Service;
         staff: StaffMember;
+        serviceAssignments?: Array<{
+          serviceId: number;
+          serviceName: string;
+          categoryName: string;
+          price: number;
+          duration: number;
+          staffId: number;
+          staffName: string;
+          gender: string;
+          role: string;
+          specialization: string;
+          isAutoAssigned: boolean;
+        }>;
+        allAssignedStaff?: StaffMember[];
       }>(r)
     ),
   lookupBooking: (params: { code?: string; phone?: string }) => {
@@ -289,6 +308,19 @@ export const api = {
           paymentStatus: string;
           totalAmount: number;
           services: Array<{ serviceName: string; duration: number; price: number }>;
+          serviceAssignments?: Array<{
+            serviceId: number;
+            serviceName: string;
+            categoryName: string;
+            price: number;
+            duration: number;
+            staffId: number;
+            staffName: string;
+            gender: string;
+            role: string;
+            specialization: string;
+            isAutoAssigned: boolean;
+          }>;
           notes?: string;
         }>;
       }>(r)

@@ -354,18 +354,39 @@ apiRouter.get('/staff/my-appointments', async (req, res) => {
 
     const staffAppointments = isAll
       ? await db.select().from(appointments).orderBy(desc(appointments.date), appointments.startTime)
-      : await db.select().from(appointments).where(eq(appointments.staffId, staffId!)).orderBy(desc(appointments.date), appointments.startTime);
+      : await db
+          .select()
+          .from(appointments)
+          .where(
+            or(
+              eq(appointments.staffId, staffId!),
+              sql`${appointments.notes} LIKE ${'%"staffId":' + staffId + '%'}`
+            )
+          )
+          .orderBy(desc(appointments.date), appointments.startTime);
 
-    // Enrich with services
+    // Enrich with services and parsed serviceAssignments
     const enriched = await Promise.all(
       staffAppointments.map(async (apt) => {
         const aptSvcs = await db
           .select()
           .from(appointmentServices)
           .where(eq(appointmentServices.appointmentId, apt.id));
+
+        let serviceAssignments: any[] = [];
+        if (apt.notes && apt.notes.includes('<!--SERVICE_ASSIGNMENTS:')) {
+          try {
+            const match = apt.notes.match(/<!--SERVICE_ASSIGNMENTS:(.*?)-->/);
+            if (match && match[1]) {
+              serviceAssignments = JSON.parse(match[1]);
+            }
+          } catch (e) {}
+        }
+
         return {
           ...apt,
           services: aptSvcs,
+          serviceAssignments,
         };
       })
     );
@@ -1322,10 +1343,10 @@ function getEligibleStaffRolesForService(categoryName: string, serviceName: stri
 // 7B. ONLINE BOOKING & AVAILABILITY ENGINE
 // ==========================================
 
-// Get available time slots for a specific date, services, and optional staff
+// Get available time slots for a specific date, services, and optional staff or multi-specialist assignments
 apiRouter.get('/appointments/availability', async (req, res) => {
   try {
-    const { date, serviceId, serviceIds, staffId, duration: customDuration } = req.query;
+    const { date, serviceId, serviceIds, staffId, duration: customDuration, staffAssignments } = req.query;
     if (!date || typeof date !== 'string') {
       return res.status(400).json({ error: 'Date is required (YYYY-MM-DD).' });
     }
@@ -1352,12 +1373,12 @@ apiRouter.get('/appointments/availability', async (req, res) => {
       parsedSvcIds = [Number(serviceId)];
     }
 
+    let loadedServices: typeof services.$inferSelect[] = [];
     if (parsedSvcIds.length > 0) {
-      const svcs = await db.select().from(services).where(inArray(services.id, parsedSvcIds));
-      if (svcs.length > 0) {
-        duration = svcs.reduce((sum, s) => sum + (s.duration || 30), 0);
-        // Determine role requirements
-        const roleSets = svcs.map((s) => getEligibleStaffRolesForService(s.categoryName, s.name));
+      loadedServices = await db.select().from(services).where(inArray(services.id, parsedSvcIds));
+      if (loadedServices.length > 0) {
+        duration = loadedServices.reduce((sum, s) => sum + (s.duration || 30), 0);
+        const roleSets = loadedServices.map((s) => getEligibleStaffRolesForService(s.categoryName, s.name));
         const commonRoles = roleSets.reduce((acc, cur) => acc.filter((r) => cur.includes(r)), roleSets[0] || []);
         targetRoles = commonRoles.length > 0 ? commonRoles : Array.from(new Set(roleSets.flat()));
       }
@@ -1367,10 +1388,20 @@ apiRouter.get('/appointments/availability', async (req, res) => {
       duration = Number(customDuration);
     }
 
+    // Parse optional per-service specialist assignments
+    let parsedAssignments: Record<string, any> = {};
+    if (typeof staffAssignments === 'string' && staffAssignments.trim()) {
+      try {
+        parsedAssignments = JSON.parse(staffAssignments);
+      } catch (e) {
+        parsedAssignments = {};
+      }
+    }
+
     // Get all active staff
     const allActiveStaff = await db.select().from(staff).where(eq(staff.isActive, true));
 
-    // Filter eligible staff
+    // Filter eligible staff for fallback/single-specialist mode
     let eligibleStaff = allActiveStaff;
     if (staffId && staffId !== 'ANY' && !isNaN(Number(staffId))) {
       eligibleStaff = allActiveStaff.filter((s) => s.id === Number(staffId));
@@ -1408,7 +1439,55 @@ apiRouter.get('/appointments/availability', async (req, res) => {
         const endMin = endM % 60;
         const endTimeStr = `${String(endH).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
 
-        // Check if ANY eligible staff member has no conflict across the combined duration
+        // If specific per-service specialist assignments were provided
+        const hasPerServiceSelection = Object.keys(parsedAssignments).length > 0 && loadedServices.length > 0;
+
+        if (hasPerServiceSelection) {
+          let allServicesAvailable = true;
+          const assignedStaffInThisSlot = new Set<number>();
+
+          for (const s of loadedServices) {
+            const chosenStaffVal = parsedAssignments[s.id];
+            const allowedRoles = getEligibleStaffRolesForService(s.categoryName, s.name);
+
+            if (chosenStaffVal && chosenStaffVal !== 'ANY' && !isNaN(Number(chosenStaffVal))) {
+              const specStaffId = Number(chosenStaffVal);
+              // Check conflict for this specific staff
+              const conflict = await hasStaffAppointmentConflict(specStaffId, date, timeStr, endTimeStr);
+              if (conflict) {
+                allServicesAvailable = false;
+                break;
+              }
+              assignedStaffInThisSlot.add(specStaffId);
+            } else {
+              // 'ANY' staff: find at least one active staff matching the service role who is not in conflict
+              const roleMatchingStaff = allActiveStaff.filter(
+                (st) => allowedRoles.includes(st.role) && st.role !== 'Helper'
+              );
+              let foundFree = false;
+              for (const st of roleMatchingStaff) {
+                const conflict = await hasStaffAppointmentConflict(st.id, date, timeStr, endTimeStr);
+                if (!conflict) {
+                  foundFree = true;
+                  break;
+                }
+              }
+              if (!foundFree) {
+                allServicesAvailable = false;
+                break;
+              }
+            }
+          }
+
+          return {
+            time: timeStr,
+            label: formatTimeLabel(timeStr),
+            available: allServicesAvailable,
+            freeStaffCount: allServicesAvailable ? 1 : 0,
+          };
+        }
+
+        // Standard/fallback check: Check if ANY eligible staff member has no conflict across duration
         let hasAvailableStaff = false;
         let freeStaffCount = 0;
 
@@ -1448,13 +1527,14 @@ function formatTimeLabel(timeStr: string): string {
   return `${displayH}:${String(m).padStart(2, '0')} ${period}`;
 }
 
-// Public Online Booking Endpoint (supports multiple services in a single appointment)
+// Public Online Booking Endpoint (supports multiple services + individual specialist assignments per service)
 apiRouter.post('/appointments/online-book', async (req, res) => {
   try {
     const {
       serviceId,
       serviceIds,
       staffId,
+      staffAssignments, // Map of { [serviceId]: staffId | 'ANY' }
       date,
       startTime,
       customerName,
@@ -1517,63 +1597,129 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
     const endM = endMinutes % 60;
     const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
 
-    // Resolve assigned staff
+    // Get all active staff
     const allActiveStaff = await db.select().from(staff).where(eq(staff.isActive, true));
-    let assignedStaff: typeof staff.$inferSelect | null = null;
 
-    if (staffId && staffId !== 'ANY' && !isNaN(Number(staffId))) {
-      const requested = allActiveStaff.find((s) => s.id === Number(staffId));
-      if (!requested) {
-        return res.status(404).json({ error: 'Selected staff member was not found.' });
+    // Parse staffAssignments if passed as object or JSON string
+    let parsedStaffMap: Record<number, number | 'ANY'> = {};
+    if (staffAssignments && typeof staffAssignments === 'object') {
+      parsedStaffMap = staffAssignments;
+    } else if (typeof staffAssignments === 'string' && staffAssignments.trim()) {
+      try {
+        parsedStaffMap = JSON.parse(staffAssignments);
+      } catch (e) {
+        parsedStaffMap = {};
       }
+    }
 
-      // Conflict detection for requested staff across combined duration
-      const hasConflict = await hasStaffAppointmentConflict(requested.id, date, startTime, endTime);
-      if (hasConflict) {
-        return res.status(409).json({
-          error: 'This time slot is no longer available. Please select another time.',
-          conflict: true,
-        });
-      }
-      assignedStaff = requested;
-    } else {
-      // Auto-assign any available staff matching the selected services
-      const roleSets = selectedServices.map((s) => getEligibleStaffRolesForService(s.categoryName, s.name));
-      const commonRoles = roleSets.reduce((acc, cur) => acc.filter((r) => cur.includes(r)), roleSets[0] || []);
-      const preferredRoles = commonRoles.length > 0 ? commonRoles : Array.from(new Set(roleSets.flat()));
+    // Structure per-service specialist assignment
+    // Rule: Customer can ONLY select a specialist whose specialty matches the service category!
+    interface ServiceAssignment {
+      serviceId: number;
+      serviceName: string;
+      categoryName: string;
+      price: number;
+      duration: number;
+      staffId: number;
+      staffName: string;
+      gender: string;
+      role: string;
+      specialization: string;
+      isAutoAssigned: boolean;
+    }
 
-      const roleSet = new Set(preferredRoles);
-      const suitableStaff = allActiveStaff.filter((s) => roleSet.has(s.role) && s.role !== 'Helper');
+    const resolvedAssignments: ServiceAssignment[] = [];
+    const usedStaffIdsInThisBooking = new Set<number>();
 
-      // Check each suitable staff member for conflict
-      for (const st of suitableStaff) {
-        const hasConflict = await hasStaffAppointmentConflict(st.id, date, startTime, endTime);
-        if (!hasConflict) {
-          assignedStaff = st;
-          break;
+    for (const s of selectedServices) {
+      const allowedRoles = getEligibleStaffRolesForService(s.categoryName, s.name);
+      const chosenStaffVal = parsedStaffMap[s.id] !== undefined ? parsedStaffMap[s.id] : staffId;
+
+      let chosenStaff: typeof staff.$inferSelect | null = null;
+      let isAutoAssigned = false;
+
+      if (chosenStaffVal && chosenStaffVal !== 'ANY' && !isNaN(Number(chosenStaffVal))) {
+        const targetStaffId = Number(chosenStaffVal);
+        const st = allActiveStaff.find((item) => item.id === targetStaffId);
+
+        if (!st) {
+          return res.status(404).json({ error: `Selected specialist for ${s.name} was not found.` });
         }
-      }
 
-      // If no category specialist is free, check if any active stylist/specialist is free
-      if (!assignedStaff) {
-        for (const st of allActiveStaff) {
-          if (st.role !== 'Helper') {
-            const hasConflict = await hasStaffAppointmentConflict(st.id, date, startTime, endTime);
-            if (!hasConflict) {
-              assignedStaff = st;
-              break;
+        // Validate Service -> Specialist Rule (Specialist must match the service category)
+        if (!allowedRoles.includes(st.role)) {
+          return res.status(400).json({
+            error: `Invalid specialist selection: ${st.name} is a ${st.role} and cannot be assigned to ${s.name} (${s.categoryName}). Please select a specialist matching this service.`,
+          });
+        }
+
+        // Conflict check for requested staff
+        const hasConflict = await hasStaffAppointmentConflict(st.id, date, startTime, endTime);
+        if (hasConflict) {
+          return res.status(409).json({
+            error: `${st.name} is already booked at ${formatTimeLabel(startTime)}. Please choose another time or specialist.`,
+            conflict: true,
+          });
+        }
+
+        chosenStaff = st;
+      } else {
+        // Auto-assign any active, matching specialist for this service category who has no conflict
+        isAutoAssigned = true;
+        const matchingStaff = allActiveStaff.filter(
+          (st) => allowedRoles.includes(st.role) && st.role !== 'Helper'
+        );
+
+        // Try to pick one without conflict
+        for (const st of matchingStaff) {
+          const hasConflict = await hasStaffAppointmentConflict(st.id, date, startTime, endTime);
+          if (!hasConflict) {
+            chosenStaff = st;
+            break;
+          }
+        }
+
+        // If none found in strict category, check any qualified staff
+        if (!chosenStaff) {
+          for (const st of allActiveStaff) {
+            if (st.role !== 'Helper') {
+              const hasConflict = await hasStaffAppointmentConflict(st.id, date, startTime, endTime);
+              if (!hasConflict) {
+                chosenStaff = st;
+                break;
+              }
             }
           }
         }
+
+        if (!chosenStaff) {
+          return res.status(409).json({
+            error: `No available specialist could be assigned for ${s.name} at ${formatTimeLabel(startTime)}. Please choose another time slot.`,
+            conflict: true,
+          });
+        }
       }
 
-      if (!assignedStaff) {
-        return res.status(409).json({
-          error: 'This time slot is no longer available. Please select another time.',
-          conflict: true,
-        });
-      }
+      usedStaffIdsInThisBooking.add(chosenStaff.id);
+      resolvedAssignments.push({
+        serviceId: s.id,
+        serviceName: s.name,
+        categoryName: s.categoryName,
+        price: s.price,
+        duration: s.duration || 30,
+        staffId: chosenStaff.id,
+        staffName: chosenStaff.name,
+        gender: chosenStaff.gender || 'Staff',
+        role: chosenStaff.role,
+        specialization: chosenStaff.specialization,
+        isAutoAssigned,
+      });
     }
+
+    // Determine primary staff and aggregated staff display name
+    const primaryStaff = allActiveStaff.find((st) => st.id === resolvedAssignments[0].staffId) || allActiveStaff[0];
+    const uniqueStaffNames = Array.from(new Set(resolvedAssignments.map((a) => `${a.staffName} (${a.role})`)));
+    const aggregateStaffName = uniqueStaffNames.length === 1 ? resolvedAssignments[0].staffName : uniqueStaffNames.join(', ');
 
     // Customer resolution or creation
     const cleanPhone = customerPhone.trim();
@@ -1605,6 +1751,14 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
     const uniqueNum = Math.floor(1000 + Math.random() * 9000);
     const bookingCode = `BK-ONL-${new Date().getFullYear()}-${uniqueNum}`;
 
+    // Format readable notes with complete specialist breakdown + embedded lossless JSON block
+    const readableAssignments = resolvedAssignments
+      .map((a) => `• ${a.serviceName} (₹${a.price}): ${a.staffName} [${a.role} • ${a.gender}]${a.isAutoAssigned ? ' (Auto-assigned)' : ''}`)
+      .join('\n');
+
+    const customerNotesPrefix = notes && notes.trim() ? `${notes.trim()}\n\n` : '';
+    const structuredNotes = `${customerNotesPrefix}Specialist Assignments:\n${readableAssignments}\n\n<!--SERVICE_ASSIGNMENTS:${JSON.stringify(resolvedAssignments)}-->`;
+
     // Insert Appointment with totalAmount and Online Booking source
     const apt = await db
       .insert(appointments)
@@ -1615,14 +1769,14 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
         customerName: customerName.trim(),
         customerPhone: cleanPhone,
         customerEmail: customerEmail ? customerEmail.trim() : null,
-        staffId: assignedStaff.id,
-        staffName: assignedStaff.name,
+        staffId: primaryStaff.id,
+        staffName: aggregateStaffName,
         date,
         startTime,
         endTime,
         status: 'Confirmed',
         paymentStatus: 'Pending',
-        notes: notes ? notes.trim() : `Online booking for ${selectedServices.length} services`,
+        notes: structuredNotes,
         totalAmount,
       })
       .returning();
@@ -1644,14 +1798,14 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
     await db.insert(notifications).values({
       type: 'APPOINTMENT',
       title: `🌐 Online Booking: ${customerName.trim()}`,
-      message: `${serviceSummary} (${selectedServices.length} services) booked with ${assignedStaff.name} on ${date} at ${formatTimeLabel(startTime)} (${bookingCode})`,
+      message: `${serviceSummary} (${selectedServices.length} services) booked with ${aggregateStaffName} on ${date} at ${formatTimeLabel(startTime)} (${bookingCode})`,
       referenceId: String(apt[0].id),
     });
 
     // Activity Log
     await db.insert(activityLogs).values({
       action: 'ONLINE_BOOKING',
-      description: `Online booking #${apt[0].id} (${bookingCode}) by ${customerName.trim()} for ${serviceSummary} with ${assignedStaff.name}`,
+      description: `Online booking #${apt[0].id} (${bookingCode}) by ${customerName.trim()} for ${serviceSummary} with specialists: ${aggregateStaffName}`,
       entityType: 'Appointment',
       entityId: String(apt[0].id),
     });
@@ -1662,7 +1816,9 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
       appointment: apt[0],
       services: selectedServices,
       service: selectedServices[0], // for backward compatibility
-      staff: assignedStaff,
+      staff: primaryStaff,
+      serviceAssignments: resolvedAssignments,
+      allAssignedStaff: Array.from(usedStaffIdsInThisBooking).map((id) => allActiveStaff.find((st) => st.id === id)),
     });
   } catch (error: any) {
     console.error('Online booking error:', error);
@@ -1701,7 +1857,7 @@ apiRouter.get('/appointments/lookup', async (req, res) => {
       return res.status(404).json({ error: 'No booking found matching your details. Please verify your booking code or phone number.' });
     }
 
-    // Attach services for each appointment
+    // Attach services and parsed serviceAssignments for each appointment
     const sanitizedBookings = await Promise.all(
       results.map(async (apt) => {
         const aptSvcs = await db
@@ -1713,6 +1869,19 @@ apiRouter.get('/appointments/lookup', async (req, res) => {
           .from(appointmentServices)
           .innerJoin(services, eq(appointmentServices.serviceId, services.id))
           .where(eq(appointmentServices.appointmentId, apt.id));
+
+        let serviceAssignments: any[] = [];
+        if (apt.notes && apt.notes.includes('<!--SERVICE_ASSIGNMENTS:')) {
+          try {
+            const match = apt.notes.match(/<!--SERVICE_ASSIGNMENTS:(.*?)-->/);
+            if (match && match[1]) {
+              serviceAssignments = JSON.parse(match[1]);
+            }
+          } catch (e) {}
+        }
+
+        // Clean notes without internal JSON comment
+        const displayNotes = apt.notes ? apt.notes.replace(/<!--SERVICE_ASSIGNMENTS:.*?-->/s, '').trim() : '';
 
         return {
           id: apt.id,
@@ -1727,7 +1896,8 @@ apiRouter.get('/appointments/lookup', async (req, res) => {
           paymentStatus: apt.paymentStatus,
           totalAmount: apt.totalAmount,
           services: aptSvcs,
-          notes: apt.notes,
+          serviceAssignments,
+          notes: displayNotes,
         };
       })
     );

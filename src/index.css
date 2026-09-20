@@ -3,25 +3,94 @@
 @layer base {
   body {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background-color: #f8fafc;
-    color: #0f172a;
+    background-color: #fdf7f8;
+    color: #2d1822;
   }
 }
 
-/* Custom scrollbars for dense business tables */
+/* Custom scrollbars with delicate soft pink touch */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: #fdf2f4;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #f4c2d0;
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #d88a9e;
+}
+
+/* Cute micro-animation keyframes for selections */
+@keyframes cutePopBounce {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.025); }
+  75% { transform: scale(0.99); }
+  100% { transform: scale(1); }
+}
+
+@keyframes cuteFloatUp {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.6) rotate(-8deg);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-8px) scale(1.1) rotate(4deg);
+  }
+  70% {
+    opacity: 0.9;
+    transform: translateY(-18px) scale(1) rotate(-3deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-28px) scale(0.7) rotate(6deg);
+  }
+}
+
+@keyframes cuteTwinkle {
+  0%, 100% { opacity: 0.3; transform: scale(0.8) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1.2) rotate(45deg); }
+}
+
+@keyframes softPulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(226, 125, 154, 0); }
+  50% { box-shadow: 0 0 0 6px rgba(226, 125, 154, 0.22); }
+}
+
+.animate-cute-pop {
+  animation: cutePopBounce 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.animate-cute-particle {
+  animation: cuteFloatUp 0.75s ease-out forwards;
+}
+
+.animate-twinkle {
+  animation: cuteTwinkle 1.2s infinite ease-in-out;
+}
+
+.soft-pink-card {
+  background: #ffffff;
+  border: 1px solid rgba(244, 194, 208, 0.65);
+  box-shadow: 0 2px 8px -2px rgba(216, 138, 158, 0.08);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.soft-pink-card:hover {
+  border-color: rgba(226, 125, 154, 0.85);
+  box-shadow: 0 6px 16px -4px rgba(216, 138, 158, 0.16);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-cute-pop,
+  .animate-cute-particle,
+  .animate-twinkle {
+    animation: none !important;
+  }
 }
 
 @media print {
