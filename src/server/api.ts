@@ -824,6 +824,14 @@ apiRouter.put('/settings', async (req, res) => {
 // ==========================================
 // 4. SERVICES & CATEGORIES
 // ==========================================
+export function sanitizeErrorMessage(err: any): string {
+  if (!err) return 'An unexpected error occurred.';
+  const msg = typeof err === 'string' ? err : err?.message || 'Database error occurred.';
+  return msg
+    .replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgresql://***:***@')
+    .replace(/password=[^\s;&]+/gi, 'password=***');
+}
+
 apiRouter.get('/services', async (req, res) => {
   try {
     let list = await db.select().from(services).orderBy(services.categoryName, services.name);
@@ -833,15 +841,16 @@ apiRouter.get('/services', async (req, res) => {
     }
     res.json(list);
   } catch (error: any) {
+    console.error('Initial error fetching services:', error);
     try {
       await initializeDatabase();
       const list = await db.select().from(services).orderBy(services.categoryName, services.name);
       return res.json(list);
     } catch (retryErr: any) {
-      console.error('Error fetching services:', retryErr);
+      console.error('Error fetching services after init retry:', retryErr);
       res.status(500).json({
-        error: retryErr?.message || error?.message,
-        detail: retryErr?.cause?.message || error?.cause?.message,
+        error: sanitizeErrorMessage(retryErr || error),
+        detail: sanitizeErrorMessage(retryErr?.cause || error?.cause),
       });
     }
   }

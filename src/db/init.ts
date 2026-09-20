@@ -444,6 +444,15 @@ async function ensureTablesCreated() {
         // Continue if permissions restrict DDL or table already exists
       }
     }
+
+    // Safely ensure all expected columns exist across core tables
+    for (const colDdl of COLUMN_ALIGNMENTS) {
+      try {
+        await db.execute(sql.raw(colDdl));
+      } catch (err: any) {
+        // Column might already exist or table permissions are restricted
+      }
+    }
   } catch (err: any) {
     // If information_schema query fails, proceed gracefully
   }
