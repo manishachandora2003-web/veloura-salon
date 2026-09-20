@@ -47,12 +47,12 @@ const TABLE_DDLS: string[] = [
   // 2. salon_settings
   `CREATE TABLE IF NOT EXISTS salon_settings (
     id SERIAL PRIMARY KEY,
-    salon_name TEXT NOT NULL DEFAULT 'Veloura 🎀 Luxury Salon & Spa',
-    tagline TEXT DEFAULT 'Luxury Hair, Beauty & Wellness',
-    phone TEXT DEFAULT '+91 98765 43210',
-    email TEXT DEFAULT 'contact@veloura.in',
-    address TEXT DEFAULT 'Indiranagar 100ft Road, Bengaluru, Karnataka 560038',
-    gst_number TEXT DEFAULT '29AAAAA0000A1Z5',
+    salon_name TEXT NOT NULL DEFAULT 'Veloura 🎀',
+    tagline TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    email TEXT DEFAULT '',
+    address TEXT DEFAULT '',
+    gst_number TEXT DEFAULT '',
     gst_rate INTEGER NOT NULL DEFAULT 18,
     tax_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     currency TEXT NOT NULL DEFAULT 'INR',
@@ -393,12 +393,12 @@ const COLUMN_ALIGNMENTS: string[] = [
   `ALTER TABLE staff ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`,
   `ALTER TABLE staff ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
 
-  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS salon_name TEXT NOT NULL DEFAULT 'Veloura 🎀 Luxury Salon & Spa'`,
-  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS tagline TEXT DEFAULT 'Luxury Hair, Beauty & Wellness'`,
-  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT '+91 98765 43210'`,
-  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS email TEXT DEFAULT 'contact@veloura.in'`,
-  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS address TEXT DEFAULT 'Indiranagar 100ft Road, Bengaluru, Karnataka 560038'`,
-  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS gst_number TEXT DEFAULT '29AAAAA0000A1Z5'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS salon_name TEXT NOT NULL DEFAULT 'Veloura 🎀'`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS tagline TEXT DEFAULT ''`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''`,
+  `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS gst_number TEXT DEFAULT ''`,
   `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS gst_rate INTEGER NOT NULL DEFAULT 18`,
   `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS tax_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
   `ALTER TABLE salon_settings ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'INR'`,
@@ -420,21 +420,32 @@ const COLUMN_ALIGNMENTS: string[] = [
 ];
 
 async function ensureTablesCreated() {
-  for (const ddl of TABLE_DDLS) {
-    try {
-      await db.execute(sql.raw(ddl));
-    } catch (err: any) {
-      // If table creation fails due to existing table/constraint or permissions, continue to next
-      console.warn('Note on table DDL:', err?.message || err);
-    }
-  }
+  try {
+    const existingTablesRes = await db.execute(
+      sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
+    );
+    const existingTableNames = new Set(
+      (existingTablesRes.rows || []).map((r: any) => String(r.table_name || '').toLowerCase())
+    );
 
-  for (const colDdl of COLUMN_ALIGNMENTS) {
-    try {
-      await db.execute(sql.raw(colDdl));
-    } catch (err: any) {
-      // Column may already exist or schema already aligned
+    for (const ddl of TABLE_DDLS) {
+      // Extract table name from CREATE TABLE IF NOT EXISTS <table_name>
+      const match = ddl.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)/i);
+      const tableName = match ? match[1].toLowerCase() : null;
+
+      if (tableName && existingTableNames.has(tableName)) {
+        // Table already exists; avoid unnecessary DDL which may fail on restricted DB users
+        continue;
+      }
+
+      try {
+        await db.execute(sql.raw(ddl));
+      } catch (err: any) {
+        // Continue if permissions restrict DDL or table already exists
+      }
     }
+  } catch (err: any) {
+    // If information_schema query fails, proceed gracefully
   }
 }
 
@@ -447,16 +458,16 @@ export async function initializeDatabase() {
     // 0. Ensure tables exist
     await ensureTablesCreated();
 
-    // 1. Ensure salon settings exist
+    // 1. Ensure salon settings exist (structural default only, preserving any existing settings)
     const existingSettings = await db.select().from(salonSettings).limit(1);
     if (existingSettings.length === 0) {
       await db.insert(salonSettings).values({
-        salonName: 'Veloura 🎀 Luxury Salon & Spa',
-        tagline: 'Luxury Hair, Beauty & Wellness',
-        phone: '+91 98765 43210',
-        email: 'contact@veloura.in',
-        address: 'Indiranagar 100ft Road, Bengaluru, Karnataka 560038',
-        gstNumber: '29AAAAA0000A1Z5',
+        salonName: 'Veloura 🎀',
+        tagline: '',
+        phone: '',
+        email: '',
+        address: '',
+        gstNumber: '',
         gstRate: 18,
         taxEnabled: true,
         currency: 'INR',
@@ -470,21 +481,14 @@ export async function initializeDatabase() {
         loyaltyMinRedemptionPoints: 50,
         acceptedPaymentMethods: 'Cash,UPI,Card,Bank Transfer',
       });
-      console.log('Default salon settings created for Veloura 🎀.');
-    } else {
-      // Ensure brand name is updated to Veloura 🎀
-      await db.update(salonSettings).set({
-        salonName: 'Veloura 🎀 Luxury Salon & Spa',
-        tagline: 'Luxury Hair, Beauty & Wellness',
-        email: 'contact@veloura.in',
-        invoicePrefix: 'VEL',
-      }).where(eq(salonSettings.id, existingSettings[0].id));
+      console.log('Default structural salon settings created for Veloura 🎀.');
     }
+    // If salon settings already exist: PRESERVE THEM EXACTLY. Do not overwrite or modify them.
 
     // 2. Ensure categories exist
     const categoryMap = new Map<string, number>();
     for (const cat of PREDEFINED_CATEGORIES) {
-      let existingCat = await db.select().from(serviceCategories).where(eq(serviceCategories.name, cat.name)).limit(1);
+      const existingCat = await db.select().from(serviceCategories).where(eq(serviceCategories.name, cat.name)).limit(1);
       if (existingCat.length === 0) {
         const inserted = await db.insert(serviceCategories).values({
           name: cat.name,
@@ -497,7 +501,14 @@ export async function initializeDatabase() {
       }
     }
 
-    // 3. Ensure the exact 31 services exist with the updated 50% increased prices
+    // 3. Ensure predefined services exist if absent WITHOUT EVER overwriting existing service prices
+    // If a service already exists:
+    // - Keep its current price exactly unchanged.
+    // - Keep its existing name unchanged.
+    // - Keep its existing duration unchanged.
+    // - Keep its existing description unchanged.
+    // - Do not reset or synchronize it.
+    // If a service does not exist at all, it may be created from PREDEFINED_SERVICES.
     const existingServices = await db.select().from(services);
     if (existingServices.length === 0) {
       for (const s of PREDEFINED_SERVICES) {
@@ -514,10 +525,9 @@ export async function initializeDatabase() {
       }
       console.log(`Seeded all ${PREDEFINED_SERVICES.length} predefined services.`);
     } else {
-      // Keep prices in sync with the 50% increased values and insert any missing services
-      const existingNames = new Set(existingServices.map((s) => s.name));
+      const existingNames = new Set(existingServices.map((s) => s.name.trim().toLowerCase()));
       for (const s of PREDEFINED_SERVICES) {
-        if (!existingNames.has(s.name)) {
+        if (!existingNames.has(s.name.trim().toLowerCase())) {
           const catId = categoryMap.get(s.category) || null;
           await db.insert(services).values({
             categoryId: catId,
@@ -528,21 +538,21 @@ export async function initializeDatabase() {
             description: s.description,
             isActive: true,
           });
-        } else {
-          await db.update(services)
-            .set({ price: s.price })
-            .where(eq(services.name, s.name));
         }
       }
     }
 
-    // 4. Ensure the 35 Staff Members exist across 7 categories
+    // 4. Preserve the required 35 staff structure across 7 categories
+    // Ensure missing required staff can be created only when genuinely absent.
+    // Never duplicate existing Staff IDs or staffCode.
+    // Do not modify unrelated existing staff records.
     const existingStaff = await db.select().from(staff);
     if (existingStaff.length === 0) {
       for (const st of INITIAL_35_STAFF) {
         await db.insert(staff).values({
           staffCode: st.staffCode,
           name: st.name,
+          gender: st.gender || 'Female',
           phone: st.phone,
           email: st.email,
           role: st.role,
@@ -557,13 +567,14 @@ export async function initializeDatabase() {
       }
       console.log(`Seeded all ${INITIAL_35_STAFF.length} staff members.`);
     } else {
-      // Ensure any missing staff members are inserted
-      const existingCodes = new Set(existingStaff.map((s) => s.staffCode));
+      const existingCodes = new Set(existingStaff.map((s) => s.staffCode?.trim()).filter(Boolean));
+      const existingNames = new Set(existingStaff.map((s) => s.name?.trim().toLowerCase()));
       for (const st of INITIAL_35_STAFF) {
-        if (!existingCodes.has(st.staffCode)) {
+        if (!existingCodes.has(st.staffCode?.trim()) && !existingNames.has(st.name.trim().toLowerCase())) {
           await db.insert(staff).values({
             staffCode: st.staffCode,
             name: st.name,
+            gender: st.gender || 'Female',
             phone: st.phone,
             email: st.email,
             role: st.role,
@@ -579,17 +590,10 @@ export async function initializeDatabase() {
       }
     }
 
-    // 5. Default Owner User if no users exist
-    const existingUsers = await db.select().from(users).limit(1);
-    if (existingUsers.length === 0) {
-      await db.insert(users).values({
-        uid: 'default-owner-uid',
-        name: 'Anita Sharma (Owner)',
-        email: 'owner@veloura.in',
-        role: 'OWNER',
-        phone: '+91 98765 43210',
-      });
-    }
+    // 5. Clean up any legacy default fake owner user if present
+    // NO fake owner users, fake customers, fake bookings, fake appointments,
+    // fake payments, fake invoices, fake revenue, fake commissions, or fake transactions.
+    await db.delete(users).where(eq(users.uid, 'default-owner-uid')).catch(() => {});
 
     return { success: true };
   } catch (error) {

@@ -22,16 +22,16 @@ export const users = pgTable('users', {
 // 2. Salon Settings
 export const salonSettings = pgTable('salon_settings', {
   id: serial('id').primaryKey(),
-  salonName: text('salon_name').notNull().default('Veloura 🎀 Luxury Salon & Spa'),
-  tagline: text('tagline').default('Luxury Hair, Beauty & Wellness'),
-  phone: text('phone').default('+91 98765 43210'),
-  email: text('email').default('contact@veloura.in'),
-  address: text('address').default('Indiranagar 100ft Road, Bengaluru, Karnataka 560038'),
-  gstNumber: text('gst_number').default('29AAAAA0000A1Z5'),
+  salonName: text('salon_name').notNull().default('Veloura 🎀'),
+  tagline: text('tagline').default(''),
+  phone: text('phone').default(''),
+  email: text('email').default(''),
+  address: text('address').default(''),
+  gstNumber: text('gst_number').default(''),
   gstRate: integer('gst_rate').notNull().default(18), // 18% GST standard in India
   taxEnabled: boolean('tax_enabled').notNull().default(true),
   currency: text('currency').notNull().default('INR'),
-  invoicePrefix: text('invoice_prefix').notNull().default('INV'),
+  invoicePrefix: text('invoice_prefix').notNull().default('VEL'),
   openingTime: text('opening_time').notNull().default('09:00'),
   closingTime: text('closing_time').notNull().default('21:00'),
   workingDays: text('working_days').notNull().default('Mon,Tue,Wed,Thu,Fri,Sat,Sun'),

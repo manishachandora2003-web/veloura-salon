@@ -8,6 +8,7 @@ declare global {
 
 export const createPool = () => {
   if (!global._postgresPool) {
+    const isProduction = process.env.NODE_ENV === 'production';
     const connectionString =
       process.env.POSTGRES_URL ||
       process.env.DATABASE_URL ||
@@ -18,6 +19,9 @@ export const createPool = () => {
 
     if (connectionString) {
       const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
+      if (isProduction && isLocal) {
+        throw new Error('Localhost database connection is strictly prohibited in production. Use the configured production PostgreSQL database.');
+      }
       poolConfig = {
         connectionString,
         ssl: isLocal ? false : { rejectUnauthorized: false },
@@ -26,8 +30,14 @@ export const createPool = () => {
       };
     } else {
       const host = process.env.POSTGRES_HOST || process.env.SQL_HOST;
+      if (isProduction && !host) {
+        throw new Error('Database host or connection string is required in production.');
+      }
       const isUnixSocket = host?.startsWith('/');
-      const isLocal = !host || host.includes('localhost') || host.includes('127.0.0.1');
+      const isLocal = !isUnixSocket && (!host || host.includes('localhost') || host.includes('127.0.0.1'));
+      if (isProduction && isLocal) {
+        throw new Error('Localhost database connection is strictly prohibited in production. Use the configured production PostgreSQL database.');
+      }
 
       poolConfig = {
         host,
