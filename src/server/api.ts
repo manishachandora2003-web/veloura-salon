@@ -407,8 +407,8 @@ apiRouter.get('/staff/public', async (req, res) => {
     } catch (retryErr: any) {
       console.error('Error fetching public staff:', retryErr);
       res.status(500).json({
-        error: retryErr?.message || error?.message,
-        detail: retryErr?.cause?.message || error?.cause?.message,
+        error: sanitizeErrorMessage(retryErr || error),
+        detail: sanitizeErrorMessage(retryErr?.cause || error?.cause),
       });
     }
   }
@@ -773,8 +773,8 @@ apiRouter.get('/settings', async (req, res) => {
     } catch (retryErr: any) {
       console.error('Error fetching settings:', retryErr);
       res.status(500).json({
-        error: retryErr?.message || error?.message,
-        detail: retryErr?.cause?.message || error?.cause?.message,
+        error: sanitizeErrorMessage(retryErr || error),
+        detail: sanitizeErrorMessage(retryErr?.cause || error?.cause),
       });
     }
   }
@@ -937,8 +937,8 @@ apiRouter.get('/categories', async (req, res) => {
     } catch (retryErr: any) {
       console.error('Error fetching categories:', retryErr);
       res.status(500).json({
-        error: retryErr?.message || error?.message,
-        detail: retryErr?.cause?.message || error?.cause?.message,
+        error: sanitizeErrorMessage(retryErr || error),
+        detail: sanitizeErrorMessage(retryErr?.cause || error?.cause),
       });
     }
   }
