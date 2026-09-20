@@ -35324,15 +35324,116 @@ var activityLogs = pgTable("activity_logs", {
 });
 
 // src/db/index.ts
+function unquote(val) {
+  const trimmed = val.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+function getCleanEnvVar(...names) {
+  if (typeof process === "undefined" || !process.env) {
+    return void 0;
+  }
+  for (const name of names) {
+    const direct = process.env[name];
+    if (typeof direct === "string" && direct.trim().length > 0) {
+      return unquote(direct);
+    }
+    const targetLower = name.trim().toLowerCase();
+    for (const [key, val] of Object.entries(process.env)) {
+      if (key.trim().toLowerCase() === targetLower && typeof val === "string" && val.trim().length > 0) {
+        return unquote(val);
+      }
+    }
+  }
+  return void 0;
+}
+function getDatabaseDiagnostic() {
+  const dbUrl = getCleanEnvVar("DATABASE_URL");
+  const databaseUrlExists = !!dbUrl;
+  const supportedVarsToCheck = [
+    "DATABASE_URL",
+    "POSTGRES_URL",
+    "POSTGRES_URL_NON_POOLING",
+    "POSTGRES_PRISMA_URL",
+    "SUPABASE_DATABASE_URL",
+    "SUPABASE_DB_URL",
+    "POSTGRES_HOST",
+    "PGHOST",
+    "SQL_HOST",
+    "POSTGRES_PORT",
+    "PGPORT",
+    "SQL_PORT",
+    "POSTGRES_USER",
+    "PGUSER",
+    "SQL_USER",
+    "POSTGRES_PASSWORD",
+    "PGPASSWORD",
+    "SQL_PASSWORD",
+    "POSTGRES_DATABASE",
+    "PGDATABASE",
+    "SQL_DB_NAME"
+  ];
+  const supportedVarsFound = [];
+  for (const varName of supportedVarsToCheck) {
+    if (getCleanEnvVar(varName)) {
+      supportedVarsFound.push(varName);
+    }
+  }
+  const otherSupportedPostgresVarsExist = supportedVarsFound.some(
+    (name) => name !== "DATABASE_URL"
+  );
+  const matchingEnvKeys = Object.keys(process.env || {}).filter(
+    (k) => /^(DATABASE|POSTGRES|PG|SQL|SUPABASE)/i.test(k.trim())
+  );
+  const connStr = getCleanEnvVar("DATABASE_URL") || getCleanEnvVar("POSTGRES_URL") || getCleanEnvVar("POSTGRES_URL_NON_POOLING") || getCleanEnvVar("POSTGRES_PRISMA_URL") || getCleanEnvVar("SUPABASE_DATABASE_URL") || getCleanEnvVar("SUPABASE_DB_URL");
+  const host = getCleanEnvVar("POSTGRES_HOST") || getCleanEnvVar("PGHOST") || getCleanEnvVar("SQL_HOST");
+  let connectionMode = "none";
+  let connectionConfigSyntacticallyUsable = false;
+  let selectedHostIsLocalhost = false;
+  if (connStr) {
+    connectionMode = "connectionString";
+    try {
+      const parsed = new URL(connStr);
+      connectionConfigSyntacticallyUsable = !!parsed.protocol && !!parsed.host;
+      selectedHostIsLocalhost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    } catch {
+      connectionConfigSyntacticallyUsable = /^postgres(ql)?:\/\//i.test(connStr);
+      selectedHostIsLocalhost = connStr.includes("localhost") || connStr.includes("127.0.0.1");
+    }
+  } else if (host) {
+    connectionMode = "individualParams";
+    connectionConfigSyntacticallyUsable = true;
+    selectedHostIsLocalhost = !host.startsWith("/") && (host.includes("localhost") || host.includes("127.0.0.1"));
+  }
+  return {
+    databaseUrlExists,
+    otherSupportedPostgresVarsExist,
+    supportedVarsFound,
+    selectedHostIsLocalhost,
+    connectionConfigSyntacticallyUsable,
+    connectionMode,
+    nodeEnv: process.env.NODE_ENV || "undefined",
+    vercelEnv: process.env.VERCEL_ENV || "undefined",
+    matchingEnvKeys
+  };
+}
 var createPool = () => {
   if (global._postgresPool) {
     return global._postgresPool;
   }
-  const isProduction = process.env.NODE_ENV === "production";
-  const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_PRISMA_URL;
+  const isProduction = process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
+  const connectionString = getCleanEnvVar("DATABASE_URL") || getCleanEnvVar("POSTGRES_URL") || getCleanEnvVar("POSTGRES_URL_NON_POOLING") || getCleanEnvVar("POSTGRES_PRISMA_URL") || getCleanEnvVar("SUPABASE_DATABASE_URL") || getCleanEnvVar("SUPABASE_DB_URL");
   let poolConfig;
   if (connectionString) {
-    const isLocal = connectionString.includes("localhost") || connectionString.includes("127.0.0.1");
+    let isLocal = false;
+    try {
+      const parsed = new URL(connectionString);
+      isLocal = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    } catch {
+      isLocal = connectionString.includes("localhost") || connectionString.includes("127.0.0.1");
+    }
     if (isProduction && isLocal) {
       throw new Error(
         "Production database cannot connect to localhost or 127.0.0.1. A valid production PostgreSQL connection string (POSTGRES_URL or DATABASE_URL) is required."
@@ -35341,12 +35442,12 @@ var createPool = () => {
     poolConfig = {
       connectionString,
       ssl: isLocal ? false : { rejectUnauthorized: false },
-      max: 10,
-      connectionTimeoutMillis: 15e3,
-      idleTimeoutMillis: 3e4
+      max: isProduction ? 2 : 10,
+      connectionTimeoutMillis: 1e4,
+      idleTimeoutMillis: 1e4
     };
   } else {
-    const host = process.env.POSTGRES_HOST || process.env.SQL_HOST || process.env.PGHOST;
+    const host = getCleanEnvVar("POSTGRES_HOST") || getCleanEnvVar("PGHOST") || getCleanEnvVar("SQL_HOST");
     if (isProduction && !host) {
       throw new Error(
         "Valid production PostgreSQL configuration (POSTGRES_URL, DATABASE_URL, or POSTGRES_HOST) is required."
@@ -35359,16 +35460,17 @@ var createPool = () => {
         "Production database cannot connect to localhost or 127.0.0.1. A valid remote PostgreSQL host or connection string is required."
       );
     }
+    const portStr = getCleanEnvVar("POSTGRES_PORT") || getCleanEnvVar("PGPORT") || getCleanEnvVar("SQL_PORT");
     poolConfig = {
       host: host || "localhost",
-      port: process.env.POSTGRES_PORT ? parseInt(process.env.POSTGRES_PORT, 10) : process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : 5432,
-      user: process.env.POSTGRES_USER || process.env.SQL_USER || process.env.PGUSER,
-      password: process.env.POSTGRES_PASSWORD || process.env.SQL_PASSWORD || process.env.PGPASSWORD,
-      database: process.env.POSTGRES_DATABASE || process.env.SQL_DB_NAME || process.env.PGDATABASE,
+      port: portStr ? parseInt(portStr, 10) : 5432,
+      user: getCleanEnvVar("POSTGRES_USER") || getCleanEnvVar("PGUSER") || getCleanEnvVar("SQL_USER"),
+      password: getCleanEnvVar("POSTGRES_PASSWORD") || getCleanEnvVar("PGPASSWORD") || getCleanEnvVar("SQL_PASSWORD"),
+      database: getCleanEnvVar("POSTGRES_DATABASE") || getCleanEnvVar("PGDATABASE") || getCleanEnvVar("SQL_DB_NAME"),
       ssl: isUnixSocket || isLocal ? false : { rejectUnauthorized: false },
-      max: 10,
-      connectionTimeoutMillis: 15e3,
-      idleTimeoutMillis: 3e4
+      max: isProduction ? 2 : 10,
+      connectionTimeoutMillis: 1e4,
+      idleTimeoutMillis: 1e4
     };
   }
   const pool = new Pool(poolConfig);
@@ -37111,6 +37213,9 @@ async function ensureDbInit() {
   return initPromise;
 }
 apiRouter.use(async (req, res, next) => {
+  if (req.path === "/health" || req.path === "/diagnostic") {
+    return next();
+  }
   try {
     await ensureDbInit();
   } catch (err) {
@@ -37149,6 +37254,7 @@ apiRouter.get("/health", async (req, res) => {
   let dbStatus = "disconnected";
   let servicesCount = 0;
   let staffCount = 0;
+  const diagnostic = getDatabaseDiagnostic();
   try {
     const s = await db.select({ count: sql`count(*)` }).from(services);
     servicesCount = Number(s[0]?.count || 0);
@@ -37156,15 +37262,19 @@ apiRouter.get("/health", async (req, res) => {
     staffCount = Number(st[0]?.count || 0);
     dbStatus = "connected";
   } catch (err) {
-    dbStatus = `error: ${err?.message || err}`;
+    dbStatus = `error: ${sanitizeErrorMessage(err)}`;
   }
   res.json({
     status: "ok",
     database: dbStatus,
     servicesCount,
     staffCount,
+    diagnostic,
     time: (/* @__PURE__ */ new Date()).toISOString()
   });
+});
+apiRouter.get("/diagnostic", (req, res) => {
+  res.json(getDatabaseDiagnostic());
 });
 apiRouter.all("/init", async (req, res) => {
   try {

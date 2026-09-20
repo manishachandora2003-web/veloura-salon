@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { db } from '../db/index.ts';
+import { db, getDatabaseDiagnostic } from '../db/index.ts';
 import {
   salonSettings,
   serviceCategories,
@@ -60,6 +60,9 @@ async function ensureDbInit() {
 }
 
 apiRouter.use(async (req, res, next) => {
+  if (req.path === '/health' || req.path === '/diagnostic') {
+    return next();
+  }
   try {
     await ensureDbInit();
   } catch (err: any) {
@@ -114,6 +117,7 @@ apiRouter.get('/health', async (req, res) => {
   let dbStatus = 'disconnected';
   let servicesCount = 0;
   let staffCount = 0;
+  const diagnostic = getDatabaseDiagnostic();
   try {
     const s = await db.select({ count: sql<number>`count(*)` }).from(services);
     servicesCount = Number(s[0]?.count || 0);
@@ -121,15 +125,20 @@ apiRouter.get('/health', async (req, res) => {
     staffCount = Number(st[0]?.count || 0);
     dbStatus = 'connected';
   } catch (err: any) {
-    dbStatus = `error: ${err?.message || err}`;
+    dbStatus = `error: ${sanitizeErrorMessage(err)}`;
   }
   res.json({
     status: 'ok',
     database: dbStatus,
     servicesCount,
     staffCount,
+    diagnostic,
     time: new Date().toISOString(),
   });
+});
+
+apiRouter.get('/diagnostic', (req, res) => {
+  res.json(getDatabaseDiagnostic());
 });
 
 apiRouter.all('/init', async (req, res) => {
