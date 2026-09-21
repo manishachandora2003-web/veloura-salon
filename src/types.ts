@@ -103,6 +103,10 @@ export interface Appointment {
   paymentStatus: 'Pending' | 'Partial' | 'Paid';
   notes: string | null;
   totalAmount: number;
+  whatsappStatus?: 'WhatsApp Sent' | 'WhatsApp Failed' | 'WhatsApp Not Configured' | 'Invalid Number' | 'WhatsApp Pending' | string;
+  whatsappMessageId?: string | null;
+  whatsappError?: string | null;
+  whatsappSentAt?: string | null;
   services?: AppointmentServiceItem[];
   createdAt: string;
 }

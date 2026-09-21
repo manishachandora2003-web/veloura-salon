@@ -35,6 +35,12 @@ import {
 import { loadIndianSalonDemoData, clearAllDemoData } from '../db/demo-data.ts';
 import { calculateBillTotals } from '../lib/currency.ts';
 import { eq, and, sql, desc, gte, lte, like, or, inArray } from 'drizzle-orm';
+import {
+  sendWhatsAppAppointmentConfirmation,
+  getWhatsAppConfigStatus,
+  normalizePhoneNumber,
+  WhatsAppSendResult,
+} from './whatsapp.ts';
 
 export const apiRouter = Router();
 
@@ -587,6 +593,39 @@ apiRouter.post('/staff/book-for-client', async (req, res) => {
     const randomCode = Math.floor(1000 + Math.random() * 9000);
     const bookingCode = `BK-STF-${uniqueYear}-${randomCode}`;
 
+    // Attempt Real WhatsApp Appointment Confirmation
+    let whatsappResult: WhatsAppSendResult = {
+      success: false,
+      status: 'WhatsApp Not Configured',
+    };
+
+    try {
+      whatsappResult = await sendWhatsAppAppointmentConfirmation({
+        customerName: resolvedCustomerName,
+        customerPhone: resolvedCustomerPhone,
+        bookingCode,
+        services: [
+          {
+            serviceName: selectedService.name,
+            price: selectedService.price,
+            duration: selectedService.duration,
+          },
+        ],
+        staffName: targetStaff[0].name,
+        date,
+        startTime,
+        totalDuration: selectedService.duration,
+        totalAmount,
+        status: 'Confirmed',
+      });
+    } catch (waErr: any) {
+      whatsappResult = {
+        success: false,
+        status: 'WhatsApp Failed',
+        error: waErr?.message || 'Unexpected WhatsApp error',
+      };
+    }
+
     // Insert Appointment with Source = 'Staff Booking'
     const newAppointment = await db
       .insert(appointments)
@@ -606,6 +645,10 @@ apiRouter.post('/staff/book-for-client', async (req, res) => {
         paymentStatus: 'Pending',
         notes: notes || 'Booked directly by staff for client',
         totalAmount,
+        whatsappStatus: whatsappResult.status,
+        whatsappMessageId: whatsappResult.messageId || null,
+        whatsappError: whatsappResult.error || null,
+        whatsappSentAt: whatsappResult.success ? new Date() : null,
       })
       .returning();
 
@@ -1321,6 +1364,37 @@ apiRouter.post('/appointments', async (req, res) => {
     const assignedBookingCode = req.body.bookingCode || `BK-ADM-${uniqueYear}-${randomSuffix}`;
     const bookingSource = req.body.source || 'Admin Booking';
 
+    // Attempt Real WhatsApp Appointment Confirmation
+    let whatsappResult: WhatsAppSendResult = {
+      success: false,
+      status: 'WhatsApp Not Configured',
+    };
+
+    try {
+      whatsappResult = await sendWhatsAppAppointmentConfirmation({
+        customerName: cust[0].name,
+        customerPhone: cust[0].phone,
+        bookingCode: assignedBookingCode,
+        services: selectedServices.map((s) => ({
+          serviceName: s.name,
+          price: s.price,
+          duration: s.duration,
+        })),
+        staffName: st[0].name,
+        date,
+        startTime,
+        totalDuration: totalDuration,
+        totalAmount,
+        status: req.body.status || 'Booked',
+      });
+    } catch (waErr: any) {
+      whatsappResult = {
+        success: false,
+        status: 'WhatsApp Failed',
+        error: waErr?.message || 'Unexpected WhatsApp error',
+      };
+    }
+
     // Insert Appointment
     const apt = await db
       .insert(appointments)
@@ -1340,6 +1414,10 @@ apiRouter.post('/appointments', async (req, res) => {
         paymentStatus: 'Pending',
         notes: notes || null,
         totalAmount,
+        whatsappStatus: whatsappResult.status,
+        whatsappMessageId: whatsappResult.messageId || null,
+        whatsappError: whatsappResult.error || null,
+        whatsappSentAt: whatsappResult.success ? new Date() : null,
       })
       .returning();
 
@@ -1445,6 +1523,90 @@ apiRouter.delete('/appointments/:id', async (req, res) => {
     await db.delete(appointmentServices).where(eq(appointmentServices.appointmentId, id));
     await db.delete(appointments).where(eq(appointments.id, id));
     res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Resend real WhatsApp confirmation for an appointment
+apiRouter.post('/appointments/:id/resend-whatsapp', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const apt = await db.select().from(appointments).where(eq(appointments.id, id)).limit(1);
+    if (!apt[0]) {
+      return res.status(404).json({ error: 'Appointment not found.' });
+    }
+
+    const aptSvcs = await db
+      .select()
+      .from(appointmentServices)
+      .where(eq(appointmentServices.appointmentId, id));
+
+    const totalDuration = aptSvcs.reduce((acc, s) => acc + (s.duration || 30), 0);
+
+    const whatsappResult = await sendWhatsAppAppointmentConfirmation({
+      customerName: apt[0].customerName,
+      customerPhone: apt[0].customerPhone,
+      bookingCode: apt[0].bookingCode || `APT-${apt[0].id}`,
+      services: aptSvcs.length > 0 ? aptSvcs.map((s) => ({
+        serviceName: s.serviceName,
+        price: s.price,
+        duration: s.duration || 30,
+      })) : [{
+        serviceName: 'Salon Appointment',
+        price: apt[0].totalAmount,
+        duration: 30,
+      }],
+      staffName: apt[0].staffName,
+      date: apt[0].date,
+      startTime: apt[0].startTime,
+      totalDuration,
+      totalAmount: apt[0].totalAmount,
+      status: apt[0].status,
+    });
+
+    // Update appointment record
+    const updated = await db
+      .update(appointments)
+      .set({
+        whatsappStatus: whatsappResult.status,
+        whatsappMessageId: whatsappResult.messageId || null,
+        whatsappError: whatsappResult.error || null,
+        whatsappSentAt: whatsappResult.success ? new Date() : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(appointments.id, id))
+      .returning();
+
+    // Activity Log
+    await db.insert(activityLogs).values({
+      action: 'WHATSAPP_CONFIRMATION_SENT',
+      description: `WhatsApp confirmation dispatched for appointment #${id} (${apt[0].customerName}). Status: ${whatsappResult.status}`,
+      entityType: 'Appointment',
+      entityId: String(id),
+    });
+
+    res.json({
+      success: whatsappResult.success,
+      status: whatsappResult.status,
+      messageId: whatsappResult.messageId,
+      error: whatsappResult.error,
+      appointment: updated[0],
+    });
+  } catch (error: any) {
+    console.error('Error resending WhatsApp confirmation:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Diagnostic check of WhatsApp configuration (secrets safely masked)
+apiRouter.get('/whatsapp/config', (req, res) => {
+  try {
+    const config = getWhatsAppConfigStatus();
+    res.json({
+      success: true,
+      ...config,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1858,8 +2020,44 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
     const uniqueStaffNames = Array.from(new Set(resolvedAssignments.map((a) => `${a.staffName} (${a.role})`)));
     const aggregateStaffName = uniqueStaffNames.length === 1 ? resolvedAssignments[0].staffName : uniqueStaffNames.join(', ');
 
+    // Customer phone normalization
+    const phoneNorm = normalizePhoneNumber(customerPhone);
+    const cleanPhone = phoneNorm.isValid ? (phoneNorm.display || customerPhone.trim()) : customerPhone.trim();
+
+    // Idempotency & Duplicate Protection: Prevent duplicate booking within 60s
+    const existingDuplicate = await db
+      .select()
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.customerPhone, cleanPhone),
+          eq(appointments.date, date),
+          eq(appointments.startTime, startTime),
+          sql`${appointments.createdAt} > NOW() - INTERVAL '60 seconds'`
+        )
+      )
+      .limit(1);
+
+    if (existingDuplicate[0]) {
+      const aptSvcs = await db
+        .select()
+        .from(appointmentServices)
+        .where(eq(appointmentServices.appointmentId, existingDuplicate[0].id));
+
+      return res.json({
+        success: true,
+        bookingCode: existingDuplicate[0].bookingCode || `BK-ONL-${existingDuplicate[0].id}`,
+        appointment: { ...existingDuplicate[0], services: aptSvcs },
+        services: aptSvcs,
+        service: aptSvcs[0],
+        staff: primaryStaff,
+        serviceAssignments: resolvedAssignments,
+        allAssignedStaff: Array.from(usedStaffIdsInThisBooking).map((id) => allActiveStaff.find((st) => st.id === id)),
+        whatsappStatus: existingDuplicate[0].whatsappStatus || 'WhatsApp Not Configured',
+      });
+    }
+
     // Customer resolution or creation
-    const cleanPhone = customerPhone.trim();
     const existingCust = await db.select().from(customers).where(eq(customers.phone, cleanPhone)).limit(1);
     let customerRecordId: number;
 
@@ -1896,7 +2094,38 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
     const customerNotesPrefix = notes && notes.trim() ? `${notes.trim()}\n\n` : '';
     const structuredNotes = `${customerNotesPrefix}Specialist Assignments:\n${readableAssignments}\n\n<!--SERVICE_ASSIGNMENTS:${JSON.stringify(resolvedAssignments)}-->`;
 
-    // Insert Appointment with totalAmount and Online Booking source
+    // Attempt Real WhatsApp Appointment Confirmation
+    let whatsappResult: WhatsAppSendResult = {
+      success: false,
+      status: 'WhatsApp Not Configured',
+    };
+
+    try {
+      whatsappResult = await sendWhatsAppAppointmentConfirmation({
+        customerName: customerName.trim(),
+        customerPhone: cleanPhone,
+        bookingCode,
+        services: selectedServices.map((s) => ({
+          serviceName: s.name,
+          price: s.price,
+          duration: s.duration || 30,
+        })),
+        staffName: aggregateStaffName,
+        date,
+        startTime,
+        totalDuration: duration,
+        totalAmount,
+        status: 'Confirmed',
+      });
+    } catch (waErr: any) {
+      whatsappResult = {
+        success: false,
+        status: 'WhatsApp Failed',
+        error: waErr?.message || 'Unexpected WhatsApp error',
+      };
+    }
+
+    // Insert Appointment with real WhatsApp delivery tracking
     const apt = await db
       .insert(appointments)
       .values({
@@ -1915,6 +2144,10 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
         paymentStatus: 'Pending',
         notes: structuredNotes,
         totalAmount,
+        whatsappStatus: whatsappResult.status,
+        whatsappMessageId: whatsappResult.messageId || null,
+        whatsappError: whatsappResult.error || null,
+        whatsappSentAt: whatsappResult.success ? new Date() : null,
       })
       .returning();
 
@@ -1956,6 +2189,9 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
       staff: primaryStaff,
       serviceAssignments: resolvedAssignments,
       allAssignedStaff: Array.from(usedStaffIdsInThisBooking).map((id) => allActiveStaff.find((st) => st.id === id)),
+      whatsappStatus: whatsappResult.status,
+      whatsappMessageId: whatsappResult.messageId,
+      whatsappError: whatsappResult.error,
     });
   } catch (error: any) {
     console.error('Online booking error:', error);

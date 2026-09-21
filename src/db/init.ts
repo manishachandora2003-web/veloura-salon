@@ -417,6 +417,11 @@ const COLUMN_ALIGNMENTS: string[] = [
   `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS description TEXT`,
   `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0`,
   `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`,
+
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_status TEXT NOT NULL DEFAULT 'WhatsApp Not Configured'`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_message_id TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_error TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_sent_at TIMESTAMP`,
 ];
 
 async function ensureTablesCreated() {

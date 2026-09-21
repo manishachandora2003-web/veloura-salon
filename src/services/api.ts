@@ -293,6 +293,36 @@ export const api = {
           isAutoAssigned: boolean;
         }>;
         allAssignedStaff?: StaffMember[];
+        whatsappStatus?: string;
+        whatsappMessageId?: string;
+        whatsappError?: string;
+      }>(r)
+    ),
+  resendWhatsAppConfirmation: (appointmentId: number) =>
+    fetch(`${API_BASE}/appointments/${appointmentId}/resend-whatsapp`, {
+      method: 'POST',
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        success: boolean;
+        status: string;
+        messageId?: string;
+        error?: string;
+        appointment?: Appointment;
+      }>(r)
+    ),
+  getWhatsAppConfig: () =>
+    fetch(`${API_BASE}/whatsapp/config`, {
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        success: boolean;
+        isConfigured: boolean;
+        hasAccessToken: boolean;
+        hasPhoneNumberId: boolean;
+        phoneNumberIdMasked?: string;
+        hasTemplate: boolean;
+        templateName?: string;
       }>(r)
     ),
   lookupBooking: (params: { code?: string; phone?: string }) => {

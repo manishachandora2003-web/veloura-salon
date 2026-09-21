@@ -34,6 +34,7 @@ import {
   Printer,
   RotateCcw,
   CheckCheck,
+  MessageSquare,
 } from 'lucide-react';
 import { Service, ServiceCategory, StaffMember, SalonSettings, Appointment } from '../types.ts';
 import { formatCurrency } from '../lib/currency.ts';
@@ -47,6 +48,7 @@ interface PublicBookingPortalProps {
   settings: SalonSettings | null;
   onSwitchToAdmin: () => void;
   onSwitchToStaff?: () => void;
+  onBookingCreated?: () => void;
 }
 
 type PortalView = 'book' | 'menu' | 'lookup';
@@ -66,6 +68,7 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
   settings,
   onSwitchToAdmin,
   onSwitchToStaff,
+  onBookingCreated,
 }) => {
   const { triggerCuteSparkle } = useCuteSparkle();
   const [activePortalView, setActivePortalView] = useState<PortalView>('book');
@@ -459,6 +462,9 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
       setConfirmedBooking(res);
       triggerCuteSparkle();
       setBookingStep(6);
+      if (onBookingCreated) {
+        onBookingCreated();
+      }
     } catch (err: any) {
       setBookingError(
         err.message || 'This time slot is no longer available. Please select another time.'
@@ -1741,6 +1747,31 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                     )}
                   </button>
                 </div>
+
+                {/* WhatsApp Status Notice */}
+                {confirmedBooking.whatsappStatus === 'WhatsApp Sent' ? (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 flex items-center space-x-2 text-xs text-emerald-800 text-left">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    <span>
+                      <strong>WhatsApp Confirmation Sent:</strong> Real confirmation message dispatched to{' '}
+                      <span className="font-mono font-bold">{confirmedBooking.appointment.customerPhone}</span> via Meta WhatsApp Cloud API.
+                    </span>
+                  </div>
+                ) : confirmedBooking.whatsappStatus === 'WhatsApp Failed' ? (
+                  <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex items-center space-x-2 text-xs text-rose-800 text-left">
+                    <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
+                    <span>
+                      <strong>WhatsApp Status:</strong> WhatsApp message delivery could not complete ({confirmedBooking.whatsappError || 'gateway response'}). Your appointment is firmly registered in the salon schedule!
+                    </span>
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 flex items-center space-x-2 text-xs text-slate-600 text-left">
+                    <MessageSquare className="h-4 w-4 text-slate-400 shrink-0" />
+                    <span>
+                      <strong>Appointment Secured:</strong> Saved in PostgreSQL. WhatsApp API environment credentials not configured on this host.
+                    </span>
+                  </div>
+                )}
 
                 {/* Summary Box with itemized services and assigned specialists */}
                 <div className="bg-pink-50/30 rounded-2xl p-5 text-left border border-pink-100 text-xs space-y-3">

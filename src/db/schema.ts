@@ -133,6 +133,10 @@ export const appointments = pgTable('appointments', {
   paymentStatus: text('payment_status').notNull().default('Pending'), // Pending, Partial, Paid
   notes: text('notes'),
   totalAmount: integer('total_amount').notNull().default(0),
+  whatsappStatus: text('whatsapp_status').notNull().default('WhatsApp Not Configured'),
+  whatsappMessageId: text('whatsapp_message_id'),
+  whatsappError: text('whatsapp_error'),
+  whatsappSentAt: timestamp('whatsapp_sent_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

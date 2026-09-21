@@ -15,12 +15,14 @@ interface NotificationsModalProps {
   notifications: NotificationItem[];
   onClose: () => void;
   onRefreshData: () => void;
+  onNavigateToAppointments?: () => void;
 }
 
 export const NotificationsModal: React.FC<NotificationsModalProps> = ({
   notifications,
   onClose,
   onRefreshData,
+  onNavigateToAppointments,
 }) => {
   const handleMarkAsRead = async (id: number) => {
     try {
@@ -94,14 +96,28 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
                   <span className="text-[10px] text-slate-400 font-mono block">{n.createdAt}</span>
                 </div>
 
-                {!n.isRead && (
-                  <button
-                    onClick={() => handleMarkAsRead(n.id)}
-                    className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 shrink-0 px-2 py-1 bg-white rounded border border-slate-200"
-                  >
-                    Dismiss
-                  </button>
-                )}
+                <div className="flex items-center space-x-1.5 shrink-0">
+                  {n.type === 'APPOINTMENT' && onNavigateToAppointments && (
+                    <button
+                      onClick={() => {
+                        handleMarkAsRead(n.id);
+                        onNavigateToAppointments();
+                        onClose();
+                      }}
+                      className="text-[11px] font-bold text-amber-700 hover:text-amber-800 px-2 py-1 bg-amber-50 hover:bg-amber-100 rounded border border-amber-200 cursor-pointer"
+                    >
+                      View
+                    </button>
+                  )}
+                  {!n.isRead && (
+                    <button
+                      onClick={() => handleMarkAsRead(n.id)}
+                      className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 px-2 py-1 bg-white rounded border border-slate-200 cursor-pointer"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
               </div>
             ))
           )}

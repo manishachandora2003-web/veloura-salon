@@ -181,6 +181,32 @@ export default function App() {
   useEffect(() => {
     verifySession();
     loadAllData();
+
+    // Periodic synchronization to ensure live updates across all open views
+    const syncInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        Promise.all([
+          api.getAppointments().then(setAppointments).catch(() => {}),
+          api.getNotifications().then(setNotifications).catch(() => {}),
+          api.getDashboard().then((d) => d && setDashboardStats(d)).catch(() => {}),
+        ]);
+      }
+    }, 15000);
+
+    const handleWindowFocus = () => {
+      Promise.all([
+        api.getAppointments().then(setAppointments).catch(() => {}),
+        api.getNotifications().then(setNotifications).catch(() => {}),
+        api.getDashboard().then((d) => d && setDashboardStats(d)).catch(() => {}),
+      ]);
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      clearInterval(syncInterval);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
   }, []);
 
   // Demo Data Handlers
@@ -307,6 +333,7 @@ export default function App() {
             settings={settings}
             onSwitchToAdmin={handleSwitchToAdmin}
             onSwitchToStaff={handleSwitchToStaff}
+            onBookingCreated={loadAllData}
           />
 
           <AuthModal
@@ -587,6 +614,10 @@ export default function App() {
           notifications={notifications}
           onClose={() => setShowNotificationsModal(false)}
           onRefreshData={loadAllData}
+          onNavigateToAppointments={() => {
+            setCurrentTab('appointments');
+            setShowNotificationsModal(false);
+          }}
         />
       )}
 
