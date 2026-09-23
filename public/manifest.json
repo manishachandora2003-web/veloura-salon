@@ -1,0 +1,31 @@
+{
+  "id": "/",
+  "name": "Veloura 🎀 — Luxury Salon & Spa",
+  "short_name": "Veloura",
+  "description": "Veloura 🎀 — Luxury Indian Salon & Spa. Explore services, book appointments online, and experience premier beauty & wellness.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/veloura-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/veloura-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/veloura-icon.png",
+      "sizes": "any",
+      "type": "image/png"
+    }
+  ]
+}

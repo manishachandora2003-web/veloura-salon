@@ -35098,6 +35098,15 @@ var appointments = pgTable("appointments", {
   // Pending, Partial, Paid
   notes: text("notes"),
   totalAmount: integer("total_amount").notNull().default(0),
+  whatsappStatus: text("whatsapp_status").notNull().default("WhatsApp Not Configured"),
+  whatsappMessageId: text("whatsapp_message_id"),
+  whatsappError: text("whatsapp_error"),
+  whatsappSentAt: timestamp("whatsapp_sent_at"),
+  smsStatus: text("sms_status").notNull().default("SMS Not Triggered"),
+  smsMessageId: text("sms_message_id"),
+  smsError: text("sms_error"),
+  smsSentAt: timestamp("sms_sent_at"),
+  notificationChannel: text("notification_channel").default("whatsapp"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow()
 });
@@ -35442,9 +35451,11 @@ var createPool = () => {
     poolConfig = {
       connectionString,
       ssl: isLocal ? false : { rejectUnauthorized: false },
-      max: isProduction ? 2 : 10,
-      connectionTimeoutMillis: 1e4,
-      idleTimeoutMillis: 1e4
+      max: isProduction ? 3 : 10,
+      connectionTimeoutMillis: 15e3,
+      idleTimeoutMillis: 1e4,
+      options: "-c search_path=public",
+      allowExitOnIdle: true
     };
   } else {
     const host = getCleanEnvVar("POSTGRES_HOST") || getCleanEnvVar("PGHOST") || getCleanEnvVar("SQL_HOST");
@@ -35468,14 +35479,26 @@ var createPool = () => {
       password: getCleanEnvVar("POSTGRES_PASSWORD") || getCleanEnvVar("PGPASSWORD") || getCleanEnvVar("SQL_PASSWORD"),
       database: getCleanEnvVar("POSTGRES_DATABASE") || getCleanEnvVar("PGDATABASE") || getCleanEnvVar("SQL_DB_NAME"),
       ssl: isUnixSocket || isLocal ? false : { rejectUnauthorized: false },
-      max: isProduction ? 2 : 10,
-      connectionTimeoutMillis: 1e4,
-      idleTimeoutMillis: 1e4
+      max: isProduction ? 3 : 10,
+      connectionTimeoutMillis: 15e3,
+      idleTimeoutMillis: 1e4,
+      options: "-c search_path=public",
+      allowExitOnIdle: true
     };
   }
   const pool = new Pool(poolConfig);
+  pool.on("connect", (client) => {
+    client.query('SET search_path TO public, "$user"').catch(() => {
+    });
+  });
   pool.on("error", (err) => {
     console.error("Unexpected error on idle SQL pool client:", err);
+    const code = err?.code;
+    const msg = err?.message || "";
+    if (code === "ECONNRESET" || code === "57P01" || msg.includes("terminated") || msg.includes("closed")) {
+      global._postgresPool = void 0;
+      global._drizzleDb = void 0;
+    }
   });
   global._postgresPool = pool;
   return pool;
@@ -36431,7 +36454,16 @@ var COLUMN_ALIGNMENTS = [
   `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS description TEXT`,
   `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0`,
-  `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`
+  `ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_status TEXT NOT NULL DEFAULT 'WhatsApp Not Configured'`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_message_id TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_error TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_sent_at TIMESTAMP`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_status TEXT NOT NULL DEFAULT 'SMS Not Triggered'`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_message_id TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_error TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_sent_at TIMESTAMP`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS notification_channel TEXT DEFAULT 'whatsapp'`
 ];
 async function ensureTablesCreated() {
   try {
@@ -36441,15 +36473,19 @@ async function ensureTablesCreated() {
     const existingTableNames = new Set(
       (existingTablesRes.rows || []).map((r) => String(r.table_name || "").toLowerCase())
     );
-    for (const ddl of TABLE_DDLS) {
-      const match = ddl.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)/i);
-      const tableName = match ? match[1].toLowerCase() : null;
-      if (tableName && existingTableNames.has(tableName)) {
-        continue;
-      }
-      try {
-        await db.execute(sql.raw(ddl));
-      } catch (err) {
+    const coreTables = ["services", "staff", "salon_settings", "service_categories", "appointments"];
+    const allCoreExist = coreTables.every((t) => existingTableNames.has(t));
+    if (!allCoreExist) {
+      for (const ddl of TABLE_DDLS) {
+        const match = ddl.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)/i);
+        const tableName = match ? match[1].toLowerCase() : null;
+        if (tableName && existingTableNames.has(tableName)) {
+          continue;
+        }
+        try {
+          await db.execute(sql.raw(ddl));
+        } catch (err) {
+        }
       }
     }
     for (const colDdl of COLUMN_ALIGNMENTS) {
@@ -36489,55 +36525,78 @@ async function initializeDatabase() {
       console.log("Default structural salon settings created for Veloura \u{1F380}.");
     }
     const categoryMap = /* @__PURE__ */ new Map();
-    for (const cat of PREDEFINED_CATEGORIES) {
-      const existingCat = await db.select().from(serviceCategories).where(eq(serviceCategories.name, cat.name)).limit(1);
-      if (existingCat.length === 0) {
-        const inserted = await db.insert(serviceCategories).values({
-          name: cat.name,
-          description: cat.description,
-          displayOrder: cat.displayOrder
-        }).returning({ id: serviceCategories.id });
-        categoryMap.set(cat.name, inserted[0].id);
-      } else {
-        categoryMap.set(cat.name, existingCat[0].id);
-      }
+    const existingCats = await db.select().from(serviceCategories);
+    const existingCatNames = new Set(existingCats.map((c) => c.name.trim().toUpperCase()));
+    existingCats.forEach((c) => categoryMap.set(c.name.trim().toUpperCase(), c.id));
+    const missingCats = PREDEFINED_CATEGORIES.filter(
+      (cat) => !existingCatNames.has(cat.name.trim().toUpperCase())
+    );
+    if (missingCats.length > 0) {
+      const inserted = await db.insert(serviceCategories).values(missingCats).returning({
+        id: serviceCategories.id,
+        name: serviceCategories.name
+      });
+      inserted.forEach((c) => categoryMap.set(c.name.trim().toUpperCase(), c.id));
     }
     const existingServices = await db.select().from(services);
     if (existingServices.length === 0) {
-      for (const s of PREDEFINED_SERVICES) {
-        const catId = categoryMap.get(s.category) || null;
-        await db.insert(services).values({
-          categoryId: catId,
+      const servicesToInsert = PREDEFINED_SERVICES.map((s) => ({
+        categoryId: categoryMap.get(s.category.toUpperCase()) || null,
+        categoryName: s.category,
+        name: s.name,
+        price: s.price,
+        duration: s.duration,
+        description: s.description,
+        isActive: true
+      }));
+      await db.insert(services).values(servicesToInsert);
+      console.log(`Initialized all ${servicesToInsert.length} predefined services.`);
+    } else {
+      const existingNames = new Set(existingServices.map((s) => s.name.trim().toLowerCase()));
+      const missingServices = PREDEFINED_SERVICES.filter(
+        (s) => !existingNames.has(s.name.trim().toLowerCase())
+      );
+      if (missingServices.length > 0) {
+        const servicesToInsert = missingServices.map((s) => ({
+          categoryId: categoryMap.get(s.category.toUpperCase()) || null,
           categoryName: s.category,
           name: s.name,
           price: s.price,
           duration: s.duration,
           description: s.description,
           isActive: true
-        });
-      }
-      console.log(`Seeded all ${PREDEFINED_SERVICES.length} predefined services.`);
-    } else {
-      const existingNames = new Set(existingServices.map((s) => s.name.trim().toLowerCase()));
-      for (const s of PREDEFINED_SERVICES) {
-        if (!existingNames.has(s.name.trim().toLowerCase())) {
-          const catId = categoryMap.get(s.category) || null;
-          await db.insert(services).values({
-            categoryId: catId,
-            categoryName: s.category,
-            name: s.name,
-            price: s.price,
-            duration: s.duration,
-            description: s.description,
-            isActive: true
-          });
-        }
+        }));
+        await db.insert(services).values(servicesToInsert);
+        console.log(`Inserted ${servicesToInsert.length} missing predefined services.`);
       }
     }
     const existingStaff = await db.select().from(staff);
     if (existingStaff.length === 0) {
-      for (const st of INITIAL_35_STAFF) {
-        await db.insert(staff).values({
+      const staffToInsert = INITIAL_35_STAFF.map((st) => ({
+        staffCode: st.staffCode,
+        name: st.name,
+        gender: st.gender || "Female",
+        phone: st.phone,
+        email: st.email,
+        role: st.role,
+        specialization: st.specialization,
+        joiningDate: st.joiningDate,
+        salary: st.salary,
+        commissionPercentage: st.commissionPercentage,
+        workingDays: st.workingDays,
+        workingHours: st.workingHours,
+        isActive: true
+      }));
+      await db.insert(staff).values(staffToInsert);
+      console.log(`Initialized all ${staffToInsert.length} initial staff members.`);
+    } else {
+      const existingCodes = new Set(existingStaff.map((s) => s.staffCode?.trim()).filter(Boolean));
+      const existingNames = new Set(existingStaff.map((s) => s.name?.trim().toLowerCase()));
+      const missingStaff = INITIAL_35_STAFF.filter(
+        (st) => !existingCodes.has(st.staffCode?.trim()) && !existingNames.has(st.name.trim().toLowerCase())
+      );
+      if (missingStaff.length > 0) {
+        const staffToInsert = missingStaff.map((st) => ({
           staffCode: st.staffCode,
           name: st.name,
           gender: st.gender || "Female",
@@ -36551,30 +36610,9 @@ async function initializeDatabase() {
           workingDays: st.workingDays,
           workingHours: st.workingHours,
           isActive: true
-        });
-      }
-      console.log(`Seeded all ${INITIAL_35_STAFF.length} staff members.`);
-    } else {
-      const existingCodes = new Set(existingStaff.map((s) => s.staffCode?.trim()).filter(Boolean));
-      const existingNames = new Set(existingStaff.map((s) => s.name?.trim().toLowerCase()));
-      for (const st of INITIAL_35_STAFF) {
-        if (!existingCodes.has(st.staffCode?.trim()) && !existingNames.has(st.name.trim().toLowerCase())) {
-          await db.insert(staff).values({
-            staffCode: st.staffCode,
-            name: st.name,
-            gender: st.gender || "Female",
-            phone: st.phone,
-            email: st.email,
-            role: st.role,
-            specialization: st.specialization,
-            joiningDate: st.joiningDate,
-            salary: st.salary,
-            commissionPercentage: st.commissionPercentage,
-            workingDays: st.workingDays,
-            workingHours: st.workingHours,
-            isActive: true
-          });
-        }
+        }));
+        await db.insert(staff).values(staffToInsert);
+        console.log(`Inserted ${staffToInsert.length} missing staff members.`);
       }
     }
     await db.delete(users).where(eq(users.uid, "default-owner-uid")).catch(() => {
@@ -37192,6 +37230,515 @@ function calculateBillTotals(subtotal, discount = 0, taxRate = 18, taxEnabled = 
   };
 }
 
+// src/server/whatsapp.ts
+function normalizePhoneNumber(rawPhone) {
+  if (!rawPhone || typeof rawPhone !== "string") {
+    return { isValid: false, error: "Phone number is required" };
+  }
+  let digits = rawPhone.replace(/[\s\-\(\)\.]/g, "");
+  if (digits.startsWith("+")) {
+    digits = digits.slice(1);
+  }
+  if (digits.startsWith("0") && digits.length === 11) {
+    digits = digits.slice(1);
+  }
+  if (/^[6-9]\d{9}$/.test(digits)) {
+    return {
+      isValid: true,
+      normalized: `91${digits}`,
+      display: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`
+    };
+  }
+  if (/^91[6-9]\d{9}$/.test(digits)) {
+    const mainDigits = digits.slice(2);
+    return {
+      isValid: true,
+      normalized: digits,
+      display: `+91 ${mainDigits.slice(0, 5)} ${mainDigits.slice(5)}`
+    };
+  }
+  if (/^\d{10,15}$/.test(digits)) {
+    return {
+      isValid: true,
+      normalized: digits,
+      display: `+${digits}`
+    };
+  }
+  return {
+    isValid: false,
+    error: "Phone number must be a valid 10-digit mobile number."
+  };
+}
+function getWhatsAppConfigStatus() {
+  const token = (process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_WHATSAPP_TOKEN || "").trim();
+  const phoneId = (process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  const templateName = (process.env.WHATSAPP_TEMPLATE_NAME || "").trim();
+  const isConfigured = Boolean(token && phoneId);
+  const phoneNumberIdMasked = phoneId ? phoneId.length > 6 ? `${phoneId.slice(0, 3)}...${phoneId.slice(-3)}` : "***" : void 0;
+  return {
+    isConfigured,
+    hasAccessToken: Boolean(token),
+    hasPhoneNumberId: Boolean(phoneId),
+    phoneNumberIdMasked,
+    hasTemplate: Boolean(templateName),
+    templateName: templateName || void 0
+  };
+}
+async function sendWhatsAppAppointmentConfirmation(payload) {
+  const token = (process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_WHATSAPP_TOKEN || "").trim();
+  const phoneNumberId = (process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  const templateName = (process.env.WHATSAPP_TEMPLATE_NAME || "").trim();
+  if (!token || !phoneNumberId) {
+    return {
+      success: false,
+      status: "WhatsApp Not Configured",
+      error: "WhatsApp Business API credentials (WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID) are not configured in the server environment."
+    };
+  }
+  const phoneCheck = normalizePhoneNumber(payload.customerPhone);
+  if (!phoneCheck.isValid || !phoneCheck.normalized) {
+    return {
+      success: false,
+      status: "Invalid Number",
+      error: phoneCheck.error || "Invalid customer phone number for WhatsApp delivery."
+    };
+  }
+  const serviceSummary = payload.services && payload.services.length > 0 ? payload.services.map((s) => s.serviceName).join(", ") : "Salon Services";
+  const messageText = `Hello ${payload.customerName.trim()} \u{1F44B}
+
+Your appointment at Veloura \u{1F380} has been booked successfully.
+
+Booking ID: ${payload.bookingCode}
+Service(s): ${serviceSummary}
+Specialist: ${payload.staffName}
+Date: ${payload.date}
+Time: ${payload.startTime}
+Duration: ${payload.totalDuration} mins
+Total: \u20B9${payload.totalAmount}
+Status: ${payload.status}
+
+Thank you for choosing Veloura \u{1F380}.`;
+  const endpoint = `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`;
+  let requestBody;
+  if (templateName) {
+    requestBody = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: phoneCheck.normalized,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: payload.customerName },
+              { type: "text", text: payload.bookingCode },
+              { type: "text", text: serviceSummary },
+              { type: "text", text: payload.staffName },
+              { type: "text", text: payload.date },
+              { type: "text", text: payload.startTime },
+              { type: "text", text: `${payload.totalDuration} mins` },
+              { type: "text", text: `\u20B9${payload.totalAmount}` },
+              { type: "text", text: payload.status }
+            ]
+          }
+        ]
+      }
+    };
+  } else {
+    requestBody = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: phoneCheck.normalized,
+      type: "text",
+      text: {
+        preview_url: false,
+        body: messageText
+      }
+    };
+  }
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody)
+    });
+    const responseData = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const errorMsg = responseData?.error?.message || responseData?.error?.error_user_msg || `Meta Graph API returned HTTP ${response.status}: ${response.statusText}`;
+      return {
+        success: false,
+        status: "WhatsApp Failed",
+        error: errorMsg
+      };
+    }
+    const messageId = responseData?.messages?.[0]?.id || `wamid.${Date.now()}`;
+    return {
+      success: true,
+      status: "WhatsApp Sent",
+      messageId
+    };
+  } catch (err) {
+    return {
+      success: false,
+      status: "WhatsApp Failed",
+      error: err?.message || "Network communication error with Meta WhatsApp API endpoint."
+    };
+  }
+}
+async function testMetaWhatsAppConnection() {
+  const token = (process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_WHATSAPP_TOKEN || "").trim();
+  const phoneNumberId = (process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  const phoneNumberIdMasked = phoneNumberId ? phoneNumberId.length > 6 ? `${phoneNumberId.slice(0, 4)}...${phoneNumberId.slice(-4)}` : phoneNumberId : void 0;
+  if (!token || !phoneNumberId) {
+    return {
+      connected: false,
+      status: "Not Configured",
+      error: "WhatsApp Business API credentials (WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID) are not configured in the server environment.",
+      details: {
+        apiVersion: "v21.0",
+        hasAccessToken: Boolean(token),
+        hasPhoneNumberId: Boolean(phoneNumberId),
+        phoneNumberIdMasked
+      }
+    };
+  }
+  try {
+    const endpoint = `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}?fields=verified_name,code_verification_status,display_phone_number,quality_rating`;
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`
+      }
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const errMsg = data?.error?.message || data?.error?.error_user_msg || `Meta Graph API returned HTTP ${response.status}: ${response.statusText}`;
+      return {
+        connected: false,
+        status: "Authentication Failed",
+        error: errMsg,
+        details: {
+          apiVersion: "v21.0",
+          hasAccessToken: true,
+          hasPhoneNumberId: true,
+          phoneNumberIdMasked
+        }
+      };
+    }
+    return {
+      connected: true,
+      status: "Connected & Verified",
+      details: {
+        apiVersion: "v21.0",
+        hasAccessToken: true,
+        hasPhoneNumberId: true,
+        phoneNumberIdMasked,
+        verifiedName: data.verified_name || "Verified WhatsApp Business Account",
+        displayPhoneNumber: data.display_phone_number || void 0,
+        qualityRating: data.quality_rating || "GREEN",
+        codeVerificationStatus: data.code_verification_status || "VERIFIED"
+      }
+    };
+  } catch (err) {
+    return {
+      connected: false,
+      status: "Network Error",
+      error: err?.message || "Failed to reach Meta Graph API servers.",
+      details: {
+        apiVersion: "v21.0",
+        hasAccessToken: true,
+        hasPhoneNumberId: true,
+        phoneNumberIdMasked
+      }
+    };
+  }
+}
+
+// src/server/sms.ts
+function normalizePhoneNumberForSMS(rawPhone) {
+  if (!rawPhone || typeof rawPhone !== "string") {
+    return { isValid: false, error: "Phone number is required" };
+  }
+  let digits = rawPhone.replace(/[\s\-\(\)\.]/g, "");
+  let hasPlus = digits.startsWith("+");
+  if (hasPlus) {
+    digits = digits.slice(1);
+  }
+  if (digits.startsWith("0") && digits.length === 11) {
+    digits = digits.slice(1);
+  }
+  if (/^[6-9]\d{9}$/.test(digits)) {
+    return {
+      isValid: true,
+      normalized: `+91${digits}`,
+      display: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`
+    };
+  }
+  if (/^91[6-9]\d{9}$/.test(digits)) {
+    const mainDigits = digits.slice(2);
+    return {
+      isValid: true,
+      normalized: `+${digits}`,
+      display: `+91 ${mainDigits.slice(0, 5)} ${mainDigits.slice(5)}`
+    };
+  }
+  if (/^\d{10,15}$/.test(digits)) {
+    return {
+      isValid: true,
+      normalized: `+${digits}`,
+      display: `+${digits}`
+    };
+  }
+  return {
+    isValid: false,
+    error: "Phone number must be a valid 10-digit mobile number."
+  };
+}
+function getTwilioConfigStatus() {
+  const accountSid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
+  const authToken = (process.env.TWILIO_AUTH_TOKEN || "").trim();
+  const fromNumber = (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_PHONE_NUMBER || "").trim();
+  const messagingServiceSid = (process.env.TWILIO_MESSAGING_SERVICE_SID || "").trim();
+  const hasSender = Boolean(fromNumber || messagingServiceSid);
+  const isConfigured = Boolean(accountSid && authToken && hasSender);
+  const accountSidMasked = accountSid ? accountSid.length > 8 ? `${accountSid.slice(0, 4)}...${accountSid.slice(-4)}` : "AC***" : void 0;
+  const fromNumberMasked = fromNumber ? fromNumber.length > 6 ? `${fromNumber.slice(0, 3)}...${fromNumber.slice(-3)}` : "***" : messagingServiceSid ? `Service: ${messagingServiceSid.slice(0, 4)}...` : void 0;
+  return {
+    isConfigured,
+    hasAccountSid: Boolean(accountSid),
+    hasAuthToken: Boolean(authToken),
+    hasFromNumber: Boolean(fromNumber),
+    hasMessagingServiceSid: Boolean(messagingServiceSid),
+    accountSidMasked,
+    fromNumberMasked
+  };
+}
+async function sendTwilioSMSAppointmentConfirmation(payload) {
+  const accountSid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
+  const authToken = (process.env.TWILIO_AUTH_TOKEN || "").trim();
+  const fromNumber = (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_PHONE_NUMBER || "").trim();
+  const messagingServiceSid = (process.env.TWILIO_MESSAGING_SERVICE_SID || "").trim();
+  if (!accountSid || !authToken || !fromNumber && !messagingServiceSid) {
+    return {
+      success: false,
+      status: "SMS Not Configured",
+      error: "Twilio SMS credentials (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, or TWILIO_PHONE_NUMBER) are not configured in the server environment.",
+      provider: "Twilio"
+    };
+  }
+  const phoneCheck = normalizePhoneNumberForSMS(payload.customerPhone);
+  if (!phoneCheck.isValid || !phoneCheck.normalized) {
+    return {
+      success: false,
+      status: "Invalid Number",
+      error: phoneCheck.error || "Invalid customer phone number for Twilio SMS delivery.",
+      provider: "Twilio"
+    };
+  }
+  const serviceSummary = payload.services && payload.services.length > 0 ? payload.services.map((s) => s.serviceName).join(", ") : "Salon Services";
+  const salonName = payload.salonName || "Veloura \u{1F380}";
+  const messageBody = `${salonName} Appointment Confirmed!
+Booking ID: ${payload.bookingCode}
+Customer: ${payload.customerName.trim()}
+Service(s): ${serviceSummary}
+Specialist: ${payload.staffName}
+Date: ${payload.date} at ${payload.startTime} (${payload.totalDuration} mins)
+Total: \u20B9${payload.totalAmount}
+Status: ${payload.status}
+Thank you for choosing Veloura!`.trim();
+  const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages.json`;
+  const params = new URLSearchParams();
+  params.append("To", phoneCheck.normalized);
+  params.append("Body", messageBody);
+  if (messagingServiceSid) {
+    params.append("MessagingServiceSid", messagingServiceSid);
+  } else {
+    params.append("From", fromNumber);
+  }
+  const basicAuth = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${basicAuth}`,
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      body: params.toString()
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const errorMsg = data?.message || `Twilio API returned HTTP ${response.status}: ${response.statusText}`;
+      return {
+        success: false,
+        status: "SMS Failed",
+        error: errorMsg,
+        provider: "Twilio"
+      };
+    }
+    const messageId = data?.sid || `SM${Date.now()}`;
+    return {
+      success: true,
+      status: "SMS Sent",
+      messageId,
+      provider: "Twilio",
+      sentAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } catch (err) {
+    return {
+      success: false,
+      status: "SMS Failed",
+      error: err?.message || "Network communication error connecting to Twilio SMS API endpoint.",
+      provider: "Twilio"
+    };
+  }
+}
+async function testTwilioSMSConnection() {
+  const accountSid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
+  const authToken = (process.env.TWILIO_AUTH_TOKEN || "").trim();
+  const fromNumber = (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_PHONE_NUMBER || "").trim();
+  const messagingServiceSid = (process.env.TWILIO_MESSAGING_SERVICE_SID || "").trim();
+  const accountSidMasked = accountSid ? accountSid.length > 8 ? `${accountSid.slice(0, 4)}...${accountSid.slice(-4)}` : "AC***" : void 0;
+  const fromNumberMasked = fromNumber ? fromNumber.length > 6 ? `${fromNumber.slice(0, 3)}...${fromNumber.slice(-3)}` : "***" : messagingServiceSid ? `Service: ${messagingServiceSid.slice(0, 4)}...` : void 0;
+  if (!accountSid || !authToken || !fromNumber && !messagingServiceSid) {
+    return {
+      connected: false,
+      status: "Not Configured",
+      error: "Twilio SMS credentials (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, or sender number) are not configured in the server environment.",
+      details: {
+        accountSidMasked,
+        fromNumberMasked,
+        hasAuthToken: Boolean(authToken),
+        hasSender: Boolean(fromNumber || messagingServiceSid)
+      }
+    };
+  }
+  try {
+    const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(accountSid)}.json`;
+    const basicAuth = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Authorization": `Basic ${basicAuth}`
+      }
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const errMsg = data?.message || `Twilio API returned HTTP ${response.status}: ${response.statusText}`;
+      return {
+        connected: false,
+        status: "Authentication Failed",
+        error: errMsg,
+        details: {
+          accountSidMasked,
+          fromNumberMasked,
+          hasAuthToken: true,
+          hasSender: true
+        }
+      };
+    }
+    return {
+      connected: true,
+      status: "Connected & Active",
+      details: {
+        accountSidMasked,
+        fromNumberMasked,
+        hasAuthToken: true,
+        hasSender: true,
+        accountName: data.friendly_name || "Twilio Production Account",
+        accountStatus: data.status || "active"
+      }
+    };
+  } catch (err) {
+    return {
+      connected: false,
+      status: "Network Error",
+      error: err?.message || "Failed to connect to Twilio API endpoint.",
+      details: {
+        accountSidMasked,
+        fromNumberMasked,
+        hasAuthToken: true,
+        hasSender: true
+      }
+    };
+  }
+}
+
+// src/server/notifications.ts
+async function dispatchAppointmentNotificationWithFallback(payload) {
+  let whatsappResult;
+  try {
+    whatsappResult = await sendWhatsAppAppointmentConfirmation(payload);
+  } catch (err) {
+    whatsappResult = {
+      success: false,
+      status: "WhatsApp Failed",
+      error: err?.message || "Unexpected failure calling WhatsApp gateway"
+    };
+  }
+  const shouldTriggerFallback = whatsappResult.status === "WhatsApp Failed" || whatsappResult.status === "WhatsApp Not Configured";
+  let smsResult = {
+    success: false,
+    status: "SMS Not Configured",
+    provider: "Twilio"
+  };
+  let fallbackTriggered = false;
+  if (shouldTriggerFallback) {
+    fallbackTriggered = true;
+    console.log(
+      `[Notification Fallback] WhatsApp returned '${whatsappResult.status}'. Triggering automated SMS fallback via Twilio for ${payload.customerName} (${payload.customerPhone})...`
+    );
+    try {
+      const smsPayload = { ...payload };
+      smsResult = await sendTwilioSMSAppointmentConfirmation(smsPayload);
+      console.log(
+        `[Notification Fallback] Twilio SMS result: ${smsResult.status} (ID: ${smsResult.messageId || "N/A"})`
+      );
+    } catch (smsErr) {
+      smsResult = {
+        success: false,
+        status: "SMS Failed",
+        error: smsErr?.message || "Unexpected failure calling Twilio SMS gateway",
+        provider: "Twilio"
+      };
+    }
+  }
+  let activeChannel = "none";
+  let summary = "";
+  if (whatsappResult.success) {
+    activeChannel = "whatsapp";
+    summary = `WhatsApp notification sent successfully (ID: ${whatsappResult.messageId || "Delivered"})`;
+  } else if (smsResult.success) {
+    activeChannel = "sms";
+    summary = `WhatsApp ${whatsappResult.status.toLowerCase()}; SMS fallback sent successfully via Twilio (SID: ${smsResult.messageId || "Delivered"})`;
+  } else if (fallbackTriggered) {
+    summary = `WhatsApp: ${whatsappResult.status}. SMS Fallback: ${smsResult.status} (${smsResult.error || "Check Twilio credentials"})`;
+  } else {
+    summary = `WhatsApp: ${whatsappResult.status} (${whatsappResult.error || "Delivery pending"})`;
+  }
+  return {
+    whatsapp: whatsappResult,
+    sms: smsResult,
+    fallbackTriggered,
+    activeChannel,
+    summary
+  };
+}
+function getNotificationSystemsConfig() {
+  const whatsapp = getWhatsAppConfigStatus();
+  const twilio = getTwilioConfigStatus();
+  return {
+    whatsapp,
+    twilio,
+    fallbackEnabled: true
+  };
+}
+
 // src/server/api.ts
 var apiRouter = (0, import_express.Router)();
 var isInitialized = false;
@@ -37256,10 +37803,33 @@ apiRouter.get("/health", async (req, res) => {
   let staffCount = 0;
   const diagnostic = getDatabaseDiagnostic();
   try {
-    const s = await db.select({ count: sql`count(*)` }).from(services);
-    servicesCount = Number(s[0]?.count || 0);
-    const st = await db.select({ count: sql`count(*)` }).from(staff);
-    staffCount = Number(st[0]?.count || 0);
+    const pool = createPool();
+    let sRes;
+    try {
+      sRes = await pool.query("SELECT COUNT(*)::int AS count FROM public.services");
+      servicesCount = Number(sRes.rows[0]?.count || 0);
+      const stRes = await pool.query("SELECT COUNT(*)::int AS count FROM public.staff");
+      staffCount = Number(stRes.rows[0]?.count || 0);
+    } catch {
+      const s = await db.select({ count: sql`count(*)` }).from(services);
+      servicesCount = Number(s[0]?.count || 0);
+      const st = await db.select({ count: sql`count(*)` }).from(staff);
+      staffCount = Number(st[0]?.count || 0);
+    }
+    if (servicesCount === 0 || staffCount === 0) {
+      await initializeDatabase();
+      try {
+        const sRes2 = await pool.query("SELECT COUNT(*)::int AS count FROM public.services");
+        servicesCount = Number(sRes2.rows[0]?.count || 0);
+        const stRes2 = await pool.query("SELECT COUNT(*)::int AS count FROM public.staff");
+        staffCount = Number(stRes2.rows[0]?.count || 0);
+      } catch {
+        const s = await db.select({ count: sql`count(*)` }).from(services);
+        servicesCount = Number(s[0]?.count || 0);
+        const st = await db.select({ count: sql`count(*)` }).from(staff);
+        staffCount = Number(st[0]?.count || 0);
+      }
+    }
     dbStatus = "connected";
   } catch (err) {
     dbStatus = `error: ${sanitizeErrorMessage(err)}`;
@@ -37643,6 +38213,24 @@ apiRouter.post("/staff/book-for-client", async (req, res) => {
     const uniqueYear = (/* @__PURE__ */ new Date()).getFullYear();
     const randomCode = Math.floor(1e3 + Math.random() * 9e3);
     const bookingCode = `BK-STF-${uniqueYear}-${randomCode}`;
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
+      customerName: resolvedCustomerName,
+      customerPhone: resolvedCustomerPhone,
+      bookingCode,
+      services: [
+        {
+          serviceName: selectedService.name,
+          price: selectedService.price,
+          duration: selectedService.duration
+        }
+      ],
+      staffName: targetStaff[0].name,
+      date: date2,
+      startTime,
+      totalDuration: selectedService.duration,
+      totalAmount,
+      status: "Confirmed"
+    });
     const newAppointment = await db.insert(appointments).values({
       bookingCode,
       source: "Staff Booking",
@@ -37658,7 +38246,16 @@ apiRouter.post("/staff/book-for-client", async (req, res) => {
       status: "Confirmed",
       paymentStatus: "Pending",
       notes: notes || "Booked directly by staff for client",
-      totalAmount
+      totalAmount,
+      whatsappStatus: notifResult.whatsapp.status,
+      whatsappMessageId: notifResult.whatsapp.messageId || null,
+      whatsappError: notifResult.whatsapp.error || null,
+      whatsappSentAt: notifResult.whatsapp.success ? /* @__PURE__ */ new Date() : null,
+      smsStatus: notifResult.sms.status,
+      smsMessageId: notifResult.sms.messageId || null,
+      smsError: notifResult.sms.error || null,
+      smsSentAt: notifResult.sms.success ? /* @__PURE__ */ new Date() : null,
+      notificationChannel: notifResult.activeChannel
     }).returning();
     await db.insert(appointmentServices).values({
       appointmentId: newAppointment[0].id,
@@ -37810,7 +38407,9 @@ apiRouter.put("/settings", async (req, res) => {
 });
 function sanitizeErrorMessage(err) {
   if (!err) return "An unexpected error occurred.";
-  const msg = typeof err === "string" ? err : err?.message || "Database error occurred.";
+  const directMsg = typeof err === "string" ? err : err?.message || "";
+  const causeMsg = err?.cause?.message ? ` (${err.cause.message})` : err?.cause && typeof err.cause === "string" ? ` (${err.cause})` : "";
+  const msg = (directMsg + causeMsg).trim() || "Database error occurred.";
   return msg.replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, "postgresql://***:***@").replace(/password=[^\s;&]+/gi, "password=***");
 }
 apiRouter.get("/services", async (req, res) => {
@@ -38026,7 +38625,11 @@ apiRouter.delete("/customers/:id", async (req, res) => {
 apiRouter.get("/staff", async (req, res) => {
   try {
     if (!requireAdminAuth(req, res)) return;
-    const staffList = await db.select().from(staff).orderBy(staff.name);
+    let staffList = await db.select().from(staff).orderBy(staff.name);
+    if (staffList.length === 0) {
+      await initializeDatabase();
+      staffList = await db.select().from(staff).orderBy(staff.name);
+    }
     const enriched = await Promise.all(
       staffList.map(async (st) => {
         const staffAppts = await db.select({ count: sql`count(*)` }).from(appointments).where(eq(appointments.staffId, st.id));
@@ -38164,6 +38767,22 @@ apiRouter.post("/appointments", async (req, res) => {
     const randomSuffix = Math.floor(1e3 + Math.random() * 9e3);
     const assignedBookingCode = req.body.bookingCode || `BK-ADM-${uniqueYear}-${randomSuffix}`;
     const bookingSource = req.body.source || "Admin Booking";
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
+      customerName: cust[0].name,
+      customerPhone: cust[0].phone,
+      bookingCode: assignedBookingCode,
+      services: selectedServices.map((s) => ({
+        serviceName: s.name,
+        price: s.price,
+        duration: s.duration
+      })),
+      staffName: st[0].name,
+      date: date2,
+      startTime,
+      totalDuration,
+      totalAmount,
+      status: req.body.status || "Booked"
+    });
     const apt = await db.insert(appointments).values({
       bookingCode: assignedBookingCode,
       source: bookingSource,
@@ -38179,7 +38798,16 @@ apiRouter.post("/appointments", async (req, res) => {
       status: req.body.status || "Booked",
       paymentStatus: "Pending",
       notes: notes || null,
-      totalAmount
+      totalAmount,
+      whatsappStatus: notifResult.whatsapp.status,
+      whatsappMessageId: notifResult.whatsapp.messageId || null,
+      whatsappError: notifResult.whatsapp.error || null,
+      whatsappSentAt: notifResult.whatsapp.success ? /* @__PURE__ */ new Date() : null,
+      smsStatus: notifResult.sms.status,
+      smsMessageId: notifResult.sms.messageId || null,
+      smsError: notifResult.sms.error || null,
+      smsSentAt: notifResult.sms.success ? /* @__PURE__ */ new Date() : null,
+      notificationChannel: notifResult.activeChannel
     }).returning();
     for (const s of selectedServices) {
       await db.insert(appointmentServices).values({
@@ -38263,6 +38891,325 @@ apiRouter.delete("/appointments/:id", async (req, res) => {
     await db.delete(appointments).where(eq(appointments.id, id));
     res.json({ success: true });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+apiRouter.post("/appointments/:id/resend-whatsapp", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const apt = await db.select().from(appointments).where(eq(appointments.id, id)).limit(1);
+    if (!apt[0]) {
+      return res.status(404).json({ error: "Appointment not found." });
+    }
+    const aptSvcs = await db.select().from(appointmentServices).where(eq(appointmentServices.appointmentId, id));
+    const totalDuration = aptSvcs.reduce((acc, s) => acc + (s.duration || 30), 0);
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
+      customerName: apt[0].customerName,
+      customerPhone: apt[0].customerPhone,
+      bookingCode: apt[0].bookingCode || `APT-${apt[0].id}`,
+      services: aptSvcs.length > 0 ? aptSvcs.map((s) => ({
+        serviceName: s.serviceName,
+        price: s.price,
+        duration: s.duration || 30
+      })) : [{
+        serviceName: "Salon Appointment",
+        price: apt[0].totalAmount,
+        duration: 30
+      }],
+      staffName: apt[0].staffName,
+      date: apt[0].date,
+      startTime: apt[0].startTime,
+      totalDuration,
+      totalAmount: apt[0].totalAmount,
+      status: apt[0].status
+    });
+    const updated = await db.update(appointments).set({
+      whatsappStatus: notifResult.whatsapp.status,
+      whatsappMessageId: notifResult.whatsapp.messageId || null,
+      whatsappError: notifResult.whatsapp.error || null,
+      whatsappSentAt: notifResult.whatsapp.success ? /* @__PURE__ */ new Date() : null,
+      smsStatus: notifResult.sms.status,
+      smsMessageId: notifResult.sms.messageId || null,
+      smsError: notifResult.sms.error || null,
+      smsSentAt: notifResult.sms.success ? /* @__PURE__ */ new Date() : null,
+      notificationChannel: notifResult.activeChannel,
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq(appointments.id, id)).returning();
+    await db.insert(activityLogs).values({
+      action: "NOTIFICATION_DISPATCHED",
+      description: `Notification dispatched for appointment #${id} (${apt[0].customerName}). ${notifResult.summary}`,
+      entityType: "Appointment",
+      entityId: String(id)
+    });
+    res.json({
+      success: notifResult.whatsapp.success || notifResult.sms.success,
+      status: notifResult.whatsapp.status,
+      messageId: notifResult.whatsapp.messageId,
+      error: notifResult.whatsapp.error,
+      whatsapp: notifResult.whatsapp,
+      sms: notifResult.sms,
+      fallbackTriggered: notifResult.fallbackTriggered,
+      activeChannel: notifResult.activeChannel,
+      summary: notifResult.summary,
+      appointment: updated[0]
+    });
+  } catch (error) {
+    console.error("Error resending appointment notification:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+apiRouter.post("/appointments/:id/resend-sms", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const apt = await db.select().from(appointments).where(eq(appointments.id, id)).limit(1);
+    if (!apt[0]) {
+      return res.status(404).json({ error: "Appointment not found." });
+    }
+    const aptSvcs = await db.select().from(appointmentServices).where(eq(appointmentServices.appointmentId, id));
+    const totalDuration = aptSvcs.reduce((acc, s) => acc + (s.duration || 30), 0);
+    const smsResult = await sendTwilioSMSAppointmentConfirmation({
+      customerName: apt[0].customerName,
+      customerPhone: apt[0].customerPhone,
+      bookingCode: apt[0].bookingCode || `APT-${apt[0].id}`,
+      services: aptSvcs.length > 0 ? aptSvcs.map((s) => ({
+        serviceName: s.serviceName,
+        price: s.price,
+        duration: s.duration || 30
+      })) : [{
+        serviceName: "Salon Appointment",
+        price: apt[0].totalAmount,
+        duration: 30
+      }],
+      staffName: apt[0].staffName,
+      date: apt[0].date,
+      startTime: apt[0].startTime,
+      totalDuration,
+      totalAmount: apt[0].totalAmount,
+      status: apt[0].status
+    });
+    const updated = await db.update(appointments).set({
+      smsStatus: smsResult.status,
+      smsMessageId: smsResult.messageId || null,
+      smsError: smsResult.error || null,
+      smsSentAt: smsResult.success ? /* @__PURE__ */ new Date() : null,
+      notificationChannel: smsResult.success ? "sms" : apt[0].notificationChannel || "whatsapp",
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq(appointments.id, id)).returning();
+    await db.insert(activityLogs).values({
+      action: "SMS_CONFIRMATION_SENT",
+      description: `Twilio SMS dispatched for appointment #${id} (${apt[0].customerName}). Status: ${smsResult.status}`,
+      entityType: "Appointment",
+      entityId: String(id)
+    });
+    res.json({
+      success: smsResult.success,
+      status: smsResult.status,
+      messageId: smsResult.messageId,
+      error: smsResult.error,
+      appointment: updated[0]
+    });
+  } catch (error) {
+    console.error("Error resending Twilio SMS:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+apiRouter.get("/whatsapp/config", (req, res) => {
+  try {
+    const config = getWhatsAppConfigStatus();
+    res.json({
+      success: true,
+      ...config
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+apiRouter.get("/sms/config", (req, res) => {
+  try {
+    const config = getTwilioConfigStatus();
+    res.json({
+      success: true,
+      ...config
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+apiRouter.get("/notifications/config", (req, res) => {
+  try {
+    const config = getNotificationSystemsConfig();
+    res.json({
+      success: true,
+      ...config
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+apiRouter.get("/whatsapp/test-connection", async (req, res) => {
+  try {
+    const result = await testMetaWhatsAppConnection();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({
+      connected: false,
+      status: "Error",
+      error: error.message
+    });
+  }
+});
+apiRouter.get("/sms/test-connection", async (req, res) => {
+  try {
+    const result = await testTwilioSMSConnection();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({
+      connected: false,
+      status: "Error",
+      error: error.message
+    });
+  }
+});
+apiRouter.post("/notifications/test-fallback", async (req, res) => {
+  try {
+    const { phone, testMode = "fallback", customMessage } = req.body;
+    if (!phone) {
+      return res.status(400).json({ error: "Recipient mobile phone number is required for test" });
+    }
+    const startTime = Date.now();
+    const cleanPhone = String(phone).trim();
+    const testBookingCode = `BK-TEST-${Date.now().toString().slice(-4)}`;
+    let result;
+    if (testMode === "direct_sms") {
+      const smsPayload = {
+        customerName: "Admin Tester",
+        customerPhone: cleanPhone,
+        bookingCode: testBookingCode,
+        services: [{ serviceName: "Veloura Signature Hair Spa", price: 1500, duration: 45 }],
+        staffName: "Senior Stylist",
+        date: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
+        startTime: "10:30 AM",
+        totalDuration: 45,
+        totalAmount: 1500,
+        status: "Confirmed (Test)",
+        salonName: "Veloura \u{1F380}"
+      };
+      const smsRes = await sendTwilioSMSAppointmentConfirmation(smsPayload);
+      result = {
+        success: smsRes.success,
+        testMode: "direct_sms",
+        activeChannel: smsRes.success ? "sms" : "none",
+        fallbackTriggered: false,
+        summary: smsRes.success ? `Direct Twilio SMS sent successfully! (SID: ${smsRes.messageId})` : `Direct Twilio SMS failed: ${smsRes.status} (${smsRes.error || "Check credentials"})`,
+        sms: smsRes,
+        whatsapp: {
+          success: false,
+          status: "Bypassed (Direct SMS Test)"
+        }
+      };
+    } else {
+      const aptPayload = {
+        customerName: "Admin Tester",
+        customerPhone: cleanPhone,
+        bookingCode: testBookingCode,
+        services: [
+          { serviceName: "Veloura Signature Hair Spa", price: 1500, duration: 45 },
+          { serviceName: "Classic Manicure", price: 800, duration: 30 }
+        ],
+        staffName: "Senior Stylist & Spa Specialist",
+        date: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
+        startTime: "10:30 AM",
+        totalDuration: 75,
+        totalAmount: 2300,
+        status: "Confirmed (Test)"
+      };
+      const notifResult = await dispatchAppointmentNotificationWithFallback(aptPayload);
+      result = {
+        ...notifResult,
+        testMode: "fallback"
+      };
+    }
+    const latencyMs = Date.now() - startTime;
+    await db.insert(activityLogs).values({
+      action: "TEST_NOTIFICATION",
+      description: `Admin executed ${testMode.toUpperCase()} notification test to ${cleanPhone}. Outcome: ${result.summary} (${latencyMs}ms)`,
+      entityType: "NotificationTest",
+      entityId: testBookingCode
+    });
+    res.json({
+      ...result,
+      phone: cleanPhone,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      latencyMs
+    });
+  } catch (error) {
+    console.error("Error running notification test:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+apiRouter.get("/notifications/logs", async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const recentAppointments = await db.select({
+      id: appointments.id,
+      bookingCode: appointments.bookingCode,
+      customerName: appointments.customerName,
+      customerPhone: appointments.customerPhone,
+      date: appointments.date,
+      startTime: appointments.startTime,
+      status: appointments.status,
+      totalAmount: appointments.totalAmount,
+      whatsappStatus: appointments.whatsappStatus,
+      whatsappMessageId: appointments.whatsappMessageId,
+      whatsappError: appointments.whatsappError,
+      whatsappSentAt: appointments.whatsappSentAt,
+      smsStatus: appointments.smsStatus,
+      smsMessageId: appointments.smsMessageId,
+      smsError: appointments.smsError,
+      smsSentAt: appointments.smsSentAt,
+      notificationChannel: appointments.notificationChannel,
+      updatedAt: appointments.updatedAt,
+      createdAt: appointments.createdAt
+    }).from(appointments).orderBy(desc(appointments.id)).limit(limit);
+    const testLogs = await db.select().from(activityLogs).where(
+      or(
+        eq(activityLogs.action, "TEST_NOTIFICATION"),
+        eq(activityLogs.action, "NOTIFICATION_DISPATCHED"),
+        eq(activityLogs.action, "SMS_CONFIRMATION_SENT"),
+        eq(activityLogs.action, "WHATSAPP_CONFIRMATION_SENT")
+      )
+    ).orderBy(desc(activityLogs.id)).limit(25);
+    let totalAppointments = recentAppointments.length;
+    let whatsappDelivered = 0;
+    let smsFallbackDelivered = 0;
+    let fallbackTriggered = 0;
+    let pendingOrFailed = 0;
+    for (const apt of recentAppointments) {
+      if (apt.whatsappStatus === "WhatsApp Sent") {
+        whatsappDelivered++;
+      } else if (apt.smsStatus === "SMS Sent") {
+        smsFallbackDelivered++;
+      } else {
+        pendingOrFailed++;
+      }
+      if (apt.smsStatus === "SMS Sent" || apt.smsStatus === "SMS Failed" || apt.whatsappStatus && apt.whatsappStatus.includes("Failed") || apt.whatsappStatus && apt.whatsappStatus.includes("Not Configured")) {
+        fallbackTriggered++;
+      }
+    }
+    res.json({
+      success: true,
+      stats: {
+        totalLogged: totalAppointments,
+        whatsappDelivered,
+        smsFallbackDelivered,
+        fallbackTriggered,
+        pendingOrFailed
+      },
+      appointments: recentAppointments,
+      activityLogs: testLogs
+    });
+  } catch (error) {
+    console.error("Error fetching notification logs:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -38589,7 +39536,30 @@ apiRouter.post("/appointments/online-book", async (req, res) => {
     const primaryStaff = allActiveStaff.find((st) => st.id === resolvedAssignments[0].staffId) || allActiveStaff[0];
     const uniqueStaffNames = Array.from(new Set(resolvedAssignments.map((a) => `${a.staffName} (${a.role})`)));
     const aggregateStaffName = uniqueStaffNames.length === 1 ? resolvedAssignments[0].staffName : uniqueStaffNames.join(", ");
-    const cleanPhone = customerPhone.trim();
+    const phoneNorm = normalizePhoneNumber(customerPhone);
+    const cleanPhone = phoneNorm.isValid ? phoneNorm.display || customerPhone.trim() : customerPhone.trim();
+    const existingDuplicate = await db.select().from(appointments).where(
+      and(
+        eq(appointments.customerPhone, cleanPhone),
+        eq(appointments.date, date2),
+        eq(appointments.startTime, startTime),
+        sql`${appointments.createdAt} > NOW() - INTERVAL '60 seconds'`
+      )
+    ).limit(1);
+    if (existingDuplicate[0]) {
+      const aptSvcs = await db.select().from(appointmentServices).where(eq(appointmentServices.appointmentId, existingDuplicate[0].id));
+      return res.json({
+        success: true,
+        bookingCode: existingDuplicate[0].bookingCode || `BK-ONL-${existingDuplicate[0].id}`,
+        appointment: { ...existingDuplicate[0], services: aptSvcs },
+        services: aptSvcs,
+        service: aptSvcs[0],
+        staff: primaryStaff,
+        serviceAssignments: resolvedAssignments,
+        allAssignedStaff: Array.from(usedStaffIdsInThisBooking).map((id) => allActiveStaff.find((st) => st.id === id)),
+        whatsappStatus: existingDuplicate[0].whatsappStatus || "WhatsApp Not Configured"
+      });
+    }
     const existingCust = await db.select().from(customers).where(eq(customers.phone, cleanPhone)).limit(1);
     let customerRecordId;
     if (existingCust[0]) {
@@ -38619,6 +39589,22 @@ apiRouter.post("/appointments/online-book", async (req, res) => {
 ${readableAssignments}
 
 <!--SERVICE_ASSIGNMENTS:${JSON.stringify(resolvedAssignments)}-->`;
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
+      customerName: customerName.trim(),
+      customerPhone: cleanPhone,
+      bookingCode,
+      services: selectedServices.map((s) => ({
+        serviceName: s.name,
+        price: s.price,
+        duration: s.duration || 30
+      })),
+      staffName: aggregateStaffName,
+      date: date2,
+      startTime,
+      totalDuration: duration,
+      totalAmount,
+      status: "Confirmed"
+    });
     const apt = await db.insert(appointments).values({
       bookingCode,
       source: "Online Booking",
@@ -38634,7 +39620,16 @@ ${readableAssignments}
       status: "Confirmed",
       paymentStatus: "Pending",
       notes: structuredNotes,
-      totalAmount
+      totalAmount,
+      whatsappStatus: notifResult.whatsapp.status,
+      whatsappMessageId: notifResult.whatsapp.messageId || null,
+      whatsappError: notifResult.whatsapp.error || null,
+      whatsappSentAt: notifResult.whatsapp.success ? /* @__PURE__ */ new Date() : null,
+      smsStatus: notifResult.sms.status,
+      smsMessageId: notifResult.sms.messageId || null,
+      smsError: notifResult.sms.error || null,
+      smsSentAt: notifResult.sms.success ? /* @__PURE__ */ new Date() : null,
+      notificationChannel: notifResult.activeChannel
     }).returning();
     for (const s of selectedServices) {
       await db.insert(appointmentServices).values({
@@ -38654,7 +39649,7 @@ ${readableAssignments}
     });
     await db.insert(activityLogs).values({
       action: "ONLINE_BOOKING",
-      description: `Online booking #${apt[0].id} (${bookingCode}) by ${customerName.trim()} for ${serviceSummary} with specialists: ${aggregateStaffName}`,
+      description: `Online booking #${apt[0].id} (${bookingCode}) by ${customerName.trim()} for ${serviceSummary} with specialists: ${aggregateStaffName}. ${notifResult.summary}`,
       entityType: "Appointment",
       entityId: String(apt[0].id)
     });
@@ -38667,7 +39662,16 @@ ${readableAssignments}
       // for backward compatibility
       staff: primaryStaff,
       serviceAssignments: resolvedAssignments,
-      allAssignedStaff: Array.from(usedStaffIdsInThisBooking).map((id) => allActiveStaff.find((st) => st.id === id))
+      allAssignedStaff: Array.from(usedStaffIdsInThisBooking).map((id) => allActiveStaff.find((st) => st.id === id)),
+      whatsappStatus: notifResult.whatsapp.status,
+      whatsappMessageId: notifResult.whatsapp.messageId,
+      whatsappError: notifResult.whatsapp.error,
+      smsStatus: notifResult.sms.status,
+      smsMessageId: notifResult.sms.messageId,
+      smsError: notifResult.sms.error,
+      fallbackTriggered: notifResult.fallbackTriggered,
+      notificationChannel: notifResult.activeChannel,
+      notificationSummary: notifResult.summary
     });
   } catch (error) {
     console.error("Online booking error:", error);
