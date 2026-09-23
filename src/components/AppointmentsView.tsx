@@ -20,6 +20,7 @@ import {
   Send,
   Sparkles,
   Info,
+  Smartphone,
 } from 'lucide-react';
 import { Appointment, StaffMember, Service } from '../types.ts';
 import { formatCurrency } from '../lib/currency.ts';
@@ -138,7 +139,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     }
   };
 
-  // Handle WhatsApp Resend
+  // Handle WhatsApp Resend with automatic Twilio SMS Fallback
   const handleResendWhatsApp = async (appointmentId: number) => {
     setResendingId(appointmentId);
     setWhatsAppFeedback(null);
@@ -147,13 +148,15 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
       if (res.success) {
         setWhatsAppFeedback({
           id: appointmentId,
-          message: `WhatsApp sent successfully (ID: ${res.messageId || 'Delivered'})`,
+          message: res.summary || (res.activeChannel === 'sms'
+            ? `WhatsApp ${res.whatsapp?.status || 'failed'}; Twilio SMS fallback sent!`
+            : `WhatsApp sent successfully (ID: ${res.messageId || 'Delivered'})`),
           success: true,
         });
       } else {
         setWhatsAppFeedback({
           id: appointmentId,
-          message: res.error || `Status: ${res.status}`,
+          message: res.summary || res.error || `Status: ${res.status}`,
           success: false,
         });
       }
@@ -161,7 +164,38 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     } catch (err: any) {
       setWhatsAppFeedback({
         id: appointmentId,
-        message: err.message || 'Failed to send WhatsApp message',
+        message: err.message || 'Failed to dispatch notification',
+        success: false,
+      });
+    } finally {
+      setResendingId(null);
+    }
+  };
+
+  // Handle direct Twilio SMS dispatch
+  const handleResendSMS = async (appointmentId: number) => {
+    setResendingId(appointmentId);
+    setWhatsAppFeedback(null);
+    try {
+      const res = await api.resendSMSConfirmation(appointmentId);
+      if (res.success) {
+        setWhatsAppFeedback({
+          id: appointmentId,
+          message: `Twilio SMS sent successfully (SID: ${res.messageId || 'Queued'})`,
+          success: true,
+        });
+      } else {
+        setWhatsAppFeedback({
+          id: appointmentId,
+          message: res.error || `Twilio SMS Status: ${res.status}`,
+          success: false,
+        });
+      }
+      onRefreshData();
+    } catch (err: any) {
+      setWhatsAppFeedback({
+        id: appointmentId,
+        message: err.message || 'Failed to dispatch Twilio SMS',
         success: false,
       });
     } finally {
@@ -505,6 +539,35 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                         <span>WhatsApp: Not Configured</span>
                       </span>
                     )}
+
+                    {/* Twilio SMS Fallback Pill (when WhatsApp is Failed or Not Configured) */}
+                    {(apt.whatsappStatus === 'WhatsApp Failed' || apt.whatsappStatus === 'WhatsApp Not Configured') && (
+                      apt.smsStatus === 'SMS Sent' ? (
+                        <span
+                          className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-50 text-blue-700 border border-blue-200 flex items-center space-x-1"
+                          title={apt.smsMessageId ? `Twilio SMS SID: ${apt.smsMessageId}` : 'Twilio SMS sent as automated fallback'}
+                        >
+                          <Smartphone className="h-3 w-3 text-blue-600" />
+                          <span>SMS Fallback: Sent</span>
+                        </span>
+                      ) : apt.smsStatus === 'SMS Failed' ? (
+                        <span
+                          className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-50 text-amber-700 border border-amber-200 flex items-center space-x-1"
+                          title={apt.smsError || 'Twilio SMS fallback failed to dispatch'}
+                        >
+                          <AlertCircle className="h-3 w-3 text-amber-600" />
+                          <span>SMS Fallback: Failed</span>
+                        </span>
+                      ) : (
+                        <span
+                          className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-50 text-slate-500 border border-slate-200 flex items-center space-x-1"
+                          title="Twilio SMS fallback triggered (configured via TWILIO_ACCOUNT_SID)"
+                        >
+                          <Smartphone className="h-3 w-3 text-slate-400" />
+                          <span>SMS Fallback: Triggered</span>
+                        </span>
+                      )
+                    )}
                   </div>
 
                   {/* Staff & Specialist Assignment */}
@@ -567,16 +630,28 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
                 {/* Status Transitions & Operational Buttons */}
                 <div className="flex items-center space-x-1.5 border-l border-slate-100 pl-3">
-                  {/* Resend WhatsApp Button */}
+                  {/* Resend WhatsApp (with automated SMS fallback) */}
                   <button
                     id={`appt-resend-wa-${apt.id}`}
                     onClick={() => handleResendWhatsApp(apt.id)}
                     disabled={resendingId === apt.id}
                     className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg text-xs font-semibold flex items-center space-x-1 border border-emerald-200/80 cursor-pointer disabled:opacity-50"
-                    title="Dispatch Real WhatsApp Confirmation"
+                    title="Dispatch Notification (WhatsApp with automated Twilio SMS fallback)"
                   >
                     <Send className={`h-3 w-3 ${resendingId === apt.id ? 'animate-pulse' : ''}`} />
-                    <span className="hidden sm:inline text-[11px]">WhatsApp</span>
+                    <span className="hidden sm:inline text-[11px]">Notify</span>
+                  </button>
+
+                  {/* Direct Twilio SMS Dispatch */}
+                  <button
+                    id={`appt-resend-sms-${apt.id}`}
+                    onClick={() => handleResendSMS(apt.id)}
+                    disabled={resendingId === apt.id}
+                    className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-semibold flex items-center space-x-1 border border-blue-200/80 cursor-pointer disabled:opacity-50"
+                    title="Dispatch Direct Twilio SMS Confirmation"
+                  >
+                    <Smartphone className={`h-3 w-3 ${resendingId === apt.id ? 'animate-pulse' : ''}`} />
+                    <span className="hidden sm:inline text-[11px]">SMS</span>
                   </button>
 
                   {apt.status === 'Booked' && (

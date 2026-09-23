@@ -296,10 +296,34 @@ export const api = {
         whatsappStatus?: string;
         whatsappMessageId?: string;
         whatsappError?: string;
+        smsStatus?: string;
+        smsMessageId?: string;
+        smsError?: string;
+        fallbackTriggered?: boolean;
+        notificationChannel?: string;
+        notificationSummary?: string;
       }>(r)
     ),
   resendWhatsAppConfirmation: (appointmentId: number) =>
     fetch(`${API_BASE}/appointments/${appointmentId}/resend-whatsapp`, {
+      method: 'POST',
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        success: boolean;
+        status: string;
+        messageId?: string;
+        error?: string;
+        whatsapp?: { status: string; messageId?: string; error?: string };
+        sms?: { status: string; messageId?: string; error?: string };
+        fallbackTriggered?: boolean;
+        activeChannel?: string;
+        summary?: string;
+        appointment?: Appointment;
+      }>(r)
+    ),
+  resendSMSConfirmation: (appointmentId: number) =>
+    fetch(`${API_BASE}/appointments/${appointmentId}/resend-sms`, {
       method: 'POST',
       headers: getHeaders(),
     }).then((r) =>
@@ -323,6 +347,144 @@ export const api = {
         phoneNumberIdMasked?: string;
         hasTemplate: boolean;
         templateName?: string;
+      }>(r)
+    ),
+  getSMSConfig: () =>
+    fetch(`${API_BASE}/sms/config`, {
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        success: boolean;
+        isConfigured: boolean;
+        hasAccountSid: boolean;
+        hasAuthToken: boolean;
+        hasFromNumber: boolean;
+        hasMessagingServiceSid: boolean;
+        accountSidMasked?: string;
+        fromNumberMasked?: string;
+      }>(r)
+    ),
+  getNotificationsConfig: () =>
+    fetch(`${API_BASE}/notifications/config`, {
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        success: boolean;
+        whatsapp: any;
+        twilio: any;
+        fallbackEnabled: boolean;
+      }>(r)
+    ),
+  testMetaWhatsAppConnection: () =>
+    fetch(`${API_BASE}/whatsapp/test-connection`, {
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        connected: boolean;
+        status: string;
+        error?: string;
+        details?: {
+          apiVersion: string;
+          hasAccessToken: boolean;
+          hasPhoneNumberId: boolean;
+          phoneNumberIdMasked?: string;
+          verifiedName?: string;
+          displayPhoneNumber?: string;
+          qualityRating?: string;
+          codeVerificationStatus?: string;
+        };
+      }>(r)
+    ),
+  testTwilioSMSConnection: () =>
+    fetch(`${API_BASE}/sms/test-connection`, {
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        connected: boolean;
+        status: string;
+        error?: string;
+        details?: {
+          accountSidMasked?: string;
+          fromNumberMasked?: string;
+          hasAuthToken: boolean;
+          hasSender: boolean;
+          accountName?: string;
+          accountStatus?: string;
+        };
+      }>(r)
+    ),
+  testNotificationFallback: (params: { phone: string; testMode?: 'fallback' | 'direct_sms'; customMessage?: string }) =>
+    fetch(`${API_BASE}/notifications/test-fallback`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(params),
+    }).then((r) =>
+      handleResponse<{
+        success: boolean;
+        testMode: string;
+        phone: string;
+        activeChannel: 'whatsapp' | 'sms' | 'none';
+        fallbackTriggered: boolean;
+        summary: string;
+        timestamp: string;
+        latencyMs: number;
+        whatsapp: {
+          success: boolean;
+          status: string;
+          messageId?: string;
+          error?: string;
+        };
+        sms: {
+          success: boolean;
+          status: string;
+          messageId?: string;
+          error?: string;
+          provider?: string;
+        };
+      }>(r)
+    ),
+  getNotificationLogs: (limit = 50) =>
+    fetch(`${API_BASE}/notifications/logs?limit=${limit}`, {
+      headers: getHeaders(),
+    }).then((r) =>
+      handleResponse<{
+        success: boolean;
+        stats: {
+          totalLogged: number;
+          whatsappDelivered: number;
+          smsFallbackDelivered: number;
+          fallbackTriggered: number;
+          pendingOrFailed: number;
+        };
+        appointments: Array<{
+          id: number;
+          bookingCode: string;
+          customerName: string;
+          customerPhone: string;
+          date: string;
+          startTime: string;
+          status: string;
+          totalAmount: number;
+          whatsappStatus?: string;
+          whatsappMessageId?: string;
+          whatsappError?: string;
+          whatsappSentAt?: string;
+          smsStatus?: string;
+          smsMessageId?: string;
+          smsError?: string;
+          smsSentAt?: string;
+          notificationChannel?: string;
+          updatedAt?: string;
+          createdAt?: string;
+        }>;
+        activityLogs: Array<{
+          id: number;
+          action: string;
+          description: string;
+          entityType?: string;
+          entityId?: string;
+          createdAt: string;
+        }>;
       }>(r)
     ),
   lookupBooking: (params: { code?: string; phone?: string }) => {

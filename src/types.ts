@@ -107,6 +107,11 @@ export interface Appointment {
   whatsappMessageId?: string | null;
   whatsappError?: string | null;
   whatsappSentAt?: string | null;
+  smsStatus?: 'SMS Sent' | 'SMS Failed' | 'SMS Not Configured' | 'Invalid Number' | 'SMS Not Triggered' | string;
+  smsMessageId?: string | null;
+  smsError?: string | null;
+  smsSentAt?: string | null;
+  notificationChannel?: 'whatsapp' | 'sms' | 'sms_fallback' | 'none' | string;
   services?: AppointmentServiceItem[];
   createdAt: string;
 }

@@ -1,6 +1,6 @@
 {
   "name": "Veloura 🎀",
-  "description": "Veloura 🎀 — Luxury Indian Salon & Spa with online customer bookings, staff scheduling, and management.",
+  "description": "Veloura 🎀 — Luxury Indian Salon & Spa with online customer bookings, staff scheduling, billing, and Meta WhatsApp with automated Twilio SMS fallback notifications.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

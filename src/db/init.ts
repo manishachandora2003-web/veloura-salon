@@ -422,6 +422,11 @@ const COLUMN_ALIGNMENTS: string[] = [
   `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_message_id TEXT`,
   `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_error TEXT`,
   `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS whatsapp_sent_at TIMESTAMP`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_status TEXT NOT NULL DEFAULT 'SMS Not Triggered'`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_message_id TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_error TEXT`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sms_sent_at TIMESTAMP`,
+  `ALTER TABLE appointments ADD COLUMN IF NOT EXISTS notification_channel TEXT DEFAULT 'whatsapp'`,
 ];
 
 async function ensureTablesCreated() {
@@ -433,20 +438,23 @@ async function ensureTablesCreated() {
       (existingTablesRes.rows || []).map((r: any) => String(r.table_name || '').toLowerCase())
     );
 
-    for (const ddl of TABLE_DDLS) {
-      // Extract table name from CREATE TABLE IF NOT EXISTS <table_name>
-      const match = ddl.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)/i);
-      const tableName = match ? match[1].toLowerCase() : null;
+    const coreTables = ['services', 'staff', 'salon_settings', 'service_categories', 'appointments'];
+    const allCoreExist = coreTables.every((t) => existingTableNames.has(t));
+    if (!allCoreExist) {
+      for (const ddl of TABLE_DDLS) {
+        // Extract table name from CREATE TABLE IF NOT EXISTS <table_name>
+        const match = ddl.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)/i);
+        const tableName = match ? match[1].toLowerCase() : null;
 
-      if (tableName && existingTableNames.has(tableName)) {
-        // Table already exists; avoid unnecessary DDL which may fail on restricted DB users
-        continue;
-      }
+        if (tableName && existingTableNames.has(tableName)) {
+          continue;
+        }
 
-      try {
-        await db.execute(sql.raw(ddl));
-      } catch (err: any) {
-        // Continue if permissions restrict DDL or table already exists
+        try {
+          await db.execute(sql.raw(ddl));
+        } catch (err: any) {
+          // Table may already exist or user lacks DDL permissions
+        }
       }
     }
 
@@ -455,7 +463,7 @@ async function ensureTablesCreated() {
       try {
         await db.execute(sql.raw(colDdl));
       } catch (err: any) {
-        // Column might already exist or table permissions are restricted
+        // Column may already exist or table permissions are restricted
       }
     }
   } catch (err: any) {
@@ -466,10 +474,11 @@ async function ensureTablesCreated() {
 /**
  * Initializes database with default salon settings, exact 31 predefined Indian salon services,
  * and the 35 dedicated staff members across 7 categories.
+ * Safe, idempotent, non-destructive, and respects existing custom prices and staff.
  */
 export async function initializeDatabase() {
   try {
-    // 0. Ensure tables exist
+    // 0. Ensure tables exist (skips immediately if tables already exist in public schema)
     await ensureTablesCreated();
 
     // 1. Ensure salon settings exist (structural default only, preserving any existing settings)
@@ -497,73 +506,94 @@ export async function initializeDatabase() {
       });
       console.log('Default structural salon settings created for Veloura 🎀.');
     }
-    // If salon settings already exist: PRESERVE THEM EXACTLY. Do not overwrite or modify them.
 
-    // 2. Ensure categories exist
+    // 2. Ensure categories exist with batch insertion
     const categoryMap = new Map<string, number>();
-    for (const cat of PREDEFINED_CATEGORIES) {
-      const existingCat = await db.select().from(serviceCategories).where(eq(serviceCategories.name, cat.name)).limit(1);
-      if (existingCat.length === 0) {
-        const inserted = await db.insert(serviceCategories).values({
-          name: cat.name,
-          description: cat.description,
-          displayOrder: cat.displayOrder,
-        }).returning({ id: serviceCategories.id });
-        categoryMap.set(cat.name, inserted[0].id);
-      } else {
-        categoryMap.set(cat.name, existingCat[0].id);
-      }
+    const existingCats = await db.select().from(serviceCategories);
+    const existingCatNames = new Set(existingCats.map((c) => c.name.trim().toUpperCase()));
+    existingCats.forEach((c) => categoryMap.set(c.name.trim().toUpperCase(), c.id));
+
+    const missingCats = PREDEFINED_CATEGORIES.filter(
+      (cat) => !existingCatNames.has(cat.name.trim().toUpperCase())
+    );
+    if (missingCats.length > 0) {
+      const inserted = await db.insert(serviceCategories).values(missingCats).returning({
+        id: serviceCategories.id,
+        name: serviceCategories.name,
+      });
+      inserted.forEach((c) => categoryMap.set(c.name.trim().toUpperCase(), c.id));
     }
 
     // 3. Ensure predefined services exist if absent WITHOUT EVER overwriting existing service prices
     // If a service already exists:
     // - Keep its current price exactly unchanged.
-    // - Keep its existing name unchanged.
-    // - Keep its existing duration unchanged.
-    // - Keep its existing description unchanged.
-    // - Do not reset or synchronize it.
-    // If a service does not exist at all, it may be created from PREDEFINED_SERVICES.
+    // - Keep its existing name, description, duration, category, and active status unchanged.
+    // - Do not reset, recalculate, or overwrite existing services.
     const existingServices = await db.select().from(services);
     if (existingServices.length === 0) {
-      for (const s of PREDEFINED_SERVICES) {
-        const catId = categoryMap.get(s.category) || null;
-        await db.insert(services).values({
-          categoryId: catId,
+      const servicesToInsert = PREDEFINED_SERVICES.map((s) => ({
+        categoryId: categoryMap.get(s.category.toUpperCase()) || null,
+        categoryName: s.category,
+        name: s.name,
+        price: s.price,
+        duration: s.duration,
+        description: s.description,
+        isActive: true,
+      }));
+      await db.insert(services).values(servicesToInsert);
+      console.log(`Initialized all ${servicesToInsert.length} predefined services.`);
+    } else {
+      const existingNames = new Set(existingServices.map((s) => s.name.trim().toLowerCase()));
+      const missingServices = PREDEFINED_SERVICES.filter(
+        (s) => !existingNames.has(s.name.trim().toLowerCase())
+      );
+      if (missingServices.length > 0) {
+        const servicesToInsert = missingServices.map((s) => ({
+          categoryId: categoryMap.get(s.category.toUpperCase()) || null,
           categoryName: s.category,
           name: s.name,
           price: s.price,
           duration: s.duration,
           description: s.description,
           isActive: true,
-        });
-      }
-      console.log(`Seeded all ${PREDEFINED_SERVICES.length} predefined services.`);
-    } else {
-      const existingNames = new Set(existingServices.map((s) => s.name.trim().toLowerCase()));
-      for (const s of PREDEFINED_SERVICES) {
-        if (!existingNames.has(s.name.trim().toLowerCase())) {
-          const catId = categoryMap.get(s.category) || null;
-          await db.insert(services).values({
-            categoryId: catId,
-            categoryName: s.category,
-            name: s.name,
-            price: s.price,
-            duration: s.duration,
-            description: s.description,
-            isActive: true,
-          });
-        }
+        }));
+        await db.insert(services).values(servicesToInsert);
+        console.log(`Inserted ${servicesToInsert.length} missing predefined services.`);
       }
     }
 
     // 4. Preserve the required 35 staff structure across 7 categories
-    // Ensure missing required staff can be created only when genuinely absent.
+    // If staff table is empty, safely initialize the intended 35 staff records in batch.
+    // Required commission rates:
+    // Makeup = 5%, Hair = 5%, Waxing & Threading = 5%, Fashion = 5%, Helper = 4%, Mani/Pedi = 5%, Spa = 5%
     // Never duplicate existing Staff IDs or staffCode.
-    // Do not modify unrelated existing staff records.
     const existingStaff = await db.select().from(staff);
     if (existingStaff.length === 0) {
-      for (const st of INITIAL_35_STAFF) {
-        await db.insert(staff).values({
+      const staffToInsert = INITIAL_35_STAFF.map((st) => ({
+        staffCode: st.staffCode,
+        name: st.name,
+        gender: st.gender || 'Female',
+        phone: st.phone,
+        email: st.email,
+        role: st.role,
+        specialization: st.specialization,
+        joiningDate: st.joiningDate,
+        salary: st.salary,
+        commissionPercentage: st.commissionPercentage,
+        workingDays: st.workingDays,
+        workingHours: st.workingHours,
+        isActive: true,
+      }));
+      await db.insert(staff).values(staffToInsert);
+      console.log(`Initialized all ${staffToInsert.length} initial staff members.`);
+    } else {
+      const existingCodes = new Set(existingStaff.map((s) => s.staffCode?.trim()).filter(Boolean));
+      const existingNames = new Set(existingStaff.map((s) => s.name?.trim().toLowerCase()));
+      const missingStaff = INITIAL_35_STAFF.filter(
+        (st) => !existingCodes.has(st.staffCode?.trim()) && !existingNames.has(st.name.trim().toLowerCase())
+      );
+      if (missingStaff.length > 0) {
+        const staffToInsert = missingStaff.map((st) => ({
           staffCode: st.staffCode,
           name: st.name,
           gender: st.gender || 'Female',
@@ -577,35 +607,14 @@ export async function initializeDatabase() {
           workingDays: st.workingDays,
           workingHours: st.workingHours,
           isActive: true,
-        });
-      }
-      console.log(`Seeded all ${INITIAL_35_STAFF.length} staff members.`);
-    } else {
-      const existingCodes = new Set(existingStaff.map((s) => s.staffCode?.trim()).filter(Boolean));
-      const existingNames = new Set(existingStaff.map((s) => s.name?.trim().toLowerCase()));
-      for (const st of INITIAL_35_STAFF) {
-        if (!existingCodes.has(st.staffCode?.trim()) && !existingNames.has(st.name.trim().toLowerCase())) {
-          await db.insert(staff).values({
-            staffCode: st.staffCode,
-            name: st.name,
-            gender: st.gender || 'Female',
-            phone: st.phone,
-            email: st.email,
-            role: st.role,
-            specialization: st.specialization,
-            joiningDate: st.joiningDate,
-            salary: st.salary,
-            commissionPercentage: st.commissionPercentage,
-            workingDays: st.workingDays,
-            workingHours: st.workingHours,
-            isActive: true,
-          });
-        }
+        }));
+        await db.insert(staff).values(staffToInsert);
+        console.log(`Inserted ${staffToInsert.length} missing staff members.`);
       }
     }
 
     // 5. Clean up any legacy default fake owner user if present
-    // NO fake owner users, fake customers, fake bookings, fake appointments,
+    // NO fake customers, fake bookings, fake appointments,
     // fake payments, fake invoices, fake revenue, fake commissions, or fake transactions.
     await db.delete(users).where(eq(users.uid, 'default-owner-uid')).catch(() => {});
 

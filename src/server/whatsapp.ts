@@ -262,3 +262,103 @@ Thank you for choosing Veloura 🎀.`;
     };
   }
 }
+
+/**
+ * Tests live Meta Graph API connection status.
+ */
+export async function testMetaWhatsAppConnection(): Promise<{
+  connected: boolean;
+  status: string;
+  error?: string;
+  details: {
+    apiVersion: string;
+    hasAccessToken: boolean;
+    hasPhoneNumberId: boolean;
+    phoneNumberIdMasked?: string;
+    verifiedName?: string;
+    displayPhoneNumber?: string;
+    qualityRating?: string;
+    codeVerificationStatus?: string;
+  };
+}> {
+  const token = (process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_WHATSAPP_TOKEN || '').trim();
+  const phoneNumberId = (process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+
+  const phoneNumberIdMasked = phoneNumberId
+    ? phoneNumberId.length > 6
+      ? `${phoneNumberId.slice(0, 4)}...${phoneNumberId.slice(-4)}`
+      : phoneNumberId
+    : undefined;
+
+  if (!token || !phoneNumberId) {
+    return {
+      connected: false,
+      status: 'Not Configured',
+      error: 'WhatsApp Business API credentials (WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID) are not configured in the server environment.',
+      details: {
+        apiVersion: 'v21.0',
+        hasAccessToken: Boolean(token),
+        hasPhoneNumberId: Boolean(phoneNumberId),
+        phoneNumberIdMasked,
+      },
+    };
+  }
+
+  try {
+    const endpoint = `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}?fields=verified_name,code_verification_status,display_phone_number,quality_rating`;
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const errMsg =
+        data?.error?.message ||
+        data?.error?.error_user_msg ||
+        `Meta Graph API returned HTTP ${response.status}: ${response.statusText}`;
+
+      return {
+        connected: false,
+        status: 'Authentication Failed',
+        error: errMsg,
+        details: {
+          apiVersion: 'v21.0',
+          hasAccessToken: true,
+          hasPhoneNumberId: true,
+          phoneNumberIdMasked,
+        },
+      };
+    }
+
+    return {
+      connected: true,
+      status: 'Connected & Verified',
+      details: {
+        apiVersion: 'v21.0',
+        hasAccessToken: true,
+        hasPhoneNumberId: true,
+        phoneNumberIdMasked,
+        verifiedName: data.verified_name || 'Verified WhatsApp Business Account',
+        displayPhoneNumber: data.display_phone_number || undefined,
+        qualityRating: data.quality_rating || 'GREEN',
+        codeVerificationStatus: data.code_verification_status || 'VERIFIED',
+      },
+    };
+  } catch (err: any) {
+    return {
+      connected: false,
+      status: 'Network Error',
+      error: err?.message || 'Failed to reach Meta Graph API servers.',
+      details: {
+        apiVersion: 'v21.0',
+        hasAccessToken: true,
+        hasPhoneNumberId: true,
+        phoneNumberIdMasked,
+      },
+    };
+  }
+}

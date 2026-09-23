@@ -135,6 +135,15 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
       gender?: string;
       specialization?: string;
     }>;
+    whatsappStatus?: string;
+    whatsappMessageId?: string;
+    whatsappError?: string;
+    smsStatus?: string;
+    smsMessageId?: string;
+    smsError?: string;
+    fallbackTriggered?: boolean;
+    notificationChannel?: string;
+    notificationSummary?: string;
   } | null>(null);
 
   // Filter & Search in Services
@@ -1748,7 +1757,7 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                   </button>
                 </div>
 
-                {/* WhatsApp Status Notice */}
+                {/* Notification Status Notice (WhatsApp with automated Twilio SMS fallback) */}
                 {confirmedBooking.whatsappStatus === 'WhatsApp Sent' ? (
                   <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 flex items-center space-x-2 text-xs text-emerald-800 text-left">
                     <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
@@ -1757,18 +1766,27 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                       <span className="font-mono font-bold">{confirmedBooking.appointment.customerPhone}</span> via Meta WhatsApp Cloud API.
                     </span>
                   </div>
+                ) : confirmedBooking.smsStatus === 'SMS Sent' ? (
+                  <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3.5 flex items-center space-x-2 text-xs text-blue-800 text-left">
+                    <CheckCircle2 className="h-4 w-4 text-blue-600 shrink-0" />
+                    <span>
+                      <strong>SMS Confirmation Sent (Automated Fallback):</strong> WhatsApp was unavailable ({confirmedBooking.whatsappStatus || 'Failed'}), so an automated confirmation SMS was dispatched via Twilio to{' '}
+                      <span className="font-mono font-bold">{confirmedBooking.appointment.customerPhone}</span>.
+                    </span>
+                  </div>
                 ) : confirmedBooking.whatsappStatus === 'WhatsApp Failed' ? (
                   <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex items-center space-x-2 text-xs text-rose-800 text-left">
                     <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
                     <span>
-                      <strong>WhatsApp Status:</strong> WhatsApp message delivery could not complete ({confirmedBooking.whatsappError || 'gateway response'}). Your appointment is firmly registered in the salon schedule!
+                      <strong>Notification Status:</strong> WhatsApp message delivery could not complete ({confirmedBooking.whatsappError || 'gateway response'})
+                      {confirmedBooking.smsError ? ` and Twilio SMS fallback error: ${confirmedBooking.smsError}` : ''}. Your appointment is firmly registered in the salon schedule!
                     </span>
                   </div>
                 ) : (
                   <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 flex items-center space-x-2 text-xs text-slate-600 text-left">
                     <MessageSquare className="h-4 w-4 text-slate-400 shrink-0" />
                     <span>
-                      <strong>Appointment Secured:</strong> Saved in PostgreSQL. WhatsApp API environment credentials not configured on this host.
+                      <strong>Appointment Secured:</strong> Saved in PostgreSQL. Live WhatsApp / SMS notifications will activate once provider credentials are configured in your server environment.
                     </span>
                   </div>
                 )}

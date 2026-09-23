@@ -137,6 +137,11 @@ export const appointments = pgTable('appointments', {
   whatsappMessageId: text('whatsapp_message_id'),
   whatsappError: text('whatsapp_error'),
   whatsappSentAt: timestamp('whatsapp_sent_at'),
+  smsStatus: text('sms_status').notNull().default('SMS Not Triggered'),
+  smsMessageId: text('sms_message_id'),
+  smsError: text('sms_error'),
+  smsSentAt: timestamp('sms_sent_at'),
+  notificationChannel: text('notification_channel').default('whatsapp'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

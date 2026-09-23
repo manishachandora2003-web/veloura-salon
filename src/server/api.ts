@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { db, getDatabaseDiagnostic } from '../db/index.ts';
+import { db, getDatabaseDiagnostic, createPool } from '../db/index.ts';
 import {
   salonSettings,
   serviceCategories,
@@ -38,9 +38,22 @@ import { eq, and, sql, desc, gte, lte, like, or, inArray } from 'drizzle-orm';
 import {
   sendWhatsAppAppointmentConfirmation,
   getWhatsAppConfigStatus,
+  testMetaWhatsAppConnection,
   normalizePhoneNumber,
   WhatsAppSendResult,
 } from './whatsapp.ts';
+import {
+  sendTwilioSMSAppointmentConfirmation,
+  getTwilioConfigStatus,
+  testTwilioSMSConnection,
+  normalizePhoneNumberForSMS,
+  SMSSendResult,
+} from './sms.ts';
+import {
+  dispatchAppointmentNotificationWithFallback,
+  getNotificationSystemsConfig,
+  UnifiedNotificationResult,
+} from './notifications.ts';
 
 export const apiRouter = Router();
 
@@ -124,15 +137,46 @@ apiRouter.get('/health', async (req, res) => {
   let servicesCount = 0;
   let staffCount = 0;
   const diagnostic = getDatabaseDiagnostic();
+
   try {
-    const s = await db.select({ count: sql<number>`count(*)` }).from(services);
-    servicesCount = Number(s[0]?.count || 0);
-    const st = await db.select({ count: sql<number>`count(*)` }).from(staff);
-    staffCount = Number(st[0]?.count || 0);
+    const pool = createPool();
+
+    // Query public.services and public.staff counts directly from PostgreSQL
+    let sRes;
+    try {
+      sRes = await pool.query('SELECT COUNT(*)::int AS count FROM public.services');
+      servicesCount = Number(sRes.rows[0]?.count || 0);
+      const stRes = await pool.query('SELECT COUNT(*)::int AS count FROM public.staff');
+      staffCount = Number(stRes.rows[0]?.count || 0);
+    } catch {
+      // Fall back to Drizzle query
+      const s = await db.select({ count: sql<number>`count(*)` }).from(services);
+      servicesCount = Number(s[0]?.count || 0);
+      const st = await db.select({ count: sql<number>`count(*)` }).from(staff);
+      staffCount = Number(st[0]?.count || 0);
+    }
+
+    // If production database has 0 services or 0 staff, safely initialize the intended catalog
+    if (servicesCount === 0 || staffCount === 0) {
+      await initializeDatabase();
+      try {
+        const sRes2 = await pool.query('SELECT COUNT(*)::int AS count FROM public.services');
+        servicesCount = Number(sRes2.rows[0]?.count || 0);
+        const stRes2 = await pool.query('SELECT COUNT(*)::int AS count FROM public.staff');
+        staffCount = Number(stRes2.rows[0]?.count || 0);
+      } catch {
+        const s = await db.select({ count: sql<number>`count(*)` }).from(services);
+        servicesCount = Number(s[0]?.count || 0);
+        const st = await db.select({ count: sql<number>`count(*)` }).from(staff);
+        staffCount = Number(st[0]?.count || 0);
+      }
+    }
+
     dbStatus = 'connected';
   } catch (err: any) {
     dbStatus = `error: ${sanitizeErrorMessage(err)}`;
   }
+
   res.json({
     status: 'ok',
     database: dbStatus,
@@ -593,38 +637,25 @@ apiRouter.post('/staff/book-for-client', async (req, res) => {
     const randomCode = Math.floor(1000 + Math.random() * 9000);
     const bookingCode = `BK-STF-${uniqueYear}-${randomCode}`;
 
-    // Attempt Real WhatsApp Appointment Confirmation
-    let whatsappResult: WhatsAppSendResult = {
-      success: false,
-      status: 'WhatsApp Not Configured',
-    };
-
-    try {
-      whatsappResult = await sendWhatsAppAppointmentConfirmation({
-        customerName: resolvedCustomerName,
-        customerPhone: resolvedCustomerPhone,
-        bookingCode,
-        services: [
-          {
-            serviceName: selectedService.name,
-            price: selectedService.price,
-            duration: selectedService.duration,
-          },
-        ],
-        staffName: targetStaff[0].name,
-        date,
-        startTime,
-        totalDuration: selectedService.duration,
-        totalAmount,
-        status: 'Confirmed',
-      });
-    } catch (waErr: any) {
-      whatsappResult = {
-        success: false,
-        status: 'WhatsApp Failed',
-        error: waErr?.message || 'Unexpected WhatsApp error',
-      };
-    }
+    // Dispatch Unified Notification (WhatsApp with automated Twilio SMS fallback)
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
+      customerName: resolvedCustomerName,
+      customerPhone: resolvedCustomerPhone,
+      bookingCode,
+      services: [
+        {
+          serviceName: selectedService.name,
+          price: selectedService.price,
+          duration: selectedService.duration,
+        },
+      ],
+      staffName: targetStaff[0].name,
+      date,
+      startTime,
+      totalDuration: selectedService.duration,
+      totalAmount,
+      status: 'Confirmed',
+    });
 
     // Insert Appointment with Source = 'Staff Booking'
     const newAppointment = await db
@@ -645,10 +676,15 @@ apiRouter.post('/staff/book-for-client', async (req, res) => {
         paymentStatus: 'Pending',
         notes: notes || 'Booked directly by staff for client',
         totalAmount,
-        whatsappStatus: whatsappResult.status,
-        whatsappMessageId: whatsappResult.messageId || null,
-        whatsappError: whatsappResult.error || null,
-        whatsappSentAt: whatsappResult.success ? new Date() : null,
+        whatsappStatus: notifResult.whatsapp.status,
+        whatsappMessageId: notifResult.whatsapp.messageId || null,
+        whatsappError: notifResult.whatsapp.error || null,
+        whatsappSentAt: notifResult.whatsapp.success ? new Date() : null,
+        smsStatus: notifResult.sms.status,
+        smsMessageId: notifResult.sms.messageId || null,
+        smsError: notifResult.sms.error || null,
+        smsSentAt: notifResult.sms.success ? new Date() : null,
+        notificationChannel: notifResult.activeChannel,
       })
       .returning();
 
@@ -878,7 +914,13 @@ apiRouter.put('/settings', async (req, res) => {
 // ==========================================
 export function sanitizeErrorMessage(err: any): string {
   if (!err) return 'An unexpected error occurred.';
-  const msg = typeof err === 'string' ? err : err?.message || 'Database error occurred.';
+  const directMsg = typeof err === 'string' ? err : err?.message || '';
+  const causeMsg = err?.cause?.message
+    ? ` (${err.cause.message})`
+    : err?.cause && typeof err.cause === 'string'
+    ? ` (${err.cause})`
+    : '';
+  const msg = (directMsg + causeMsg).trim() || 'Database error occurred.';
   return msg
     .replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgresql://***:***@')
     .replace(/password=[^\s;&]+/gi, 'password=***');
@@ -1166,7 +1208,11 @@ apiRouter.delete('/customers/:id', async (req, res) => {
 apiRouter.get('/staff', async (req, res) => {
   try {
     if (!requireAdminAuth(req, res)) return;
-    const staffList = await db.select().from(staff).orderBy(staff.name);
+    let staffList = await db.select().from(staff).orderBy(staff.name);
+    if (staffList.length === 0) {
+      await initializeDatabase();
+      staffList = await db.select().from(staff).orderBy(staff.name);
+    }
 
     // Calculate actual performance metrics from appointments and invoice_items
     const enriched = await Promise.all(
@@ -1364,36 +1410,23 @@ apiRouter.post('/appointments', async (req, res) => {
     const assignedBookingCode = req.body.bookingCode || `BK-ADM-${uniqueYear}-${randomSuffix}`;
     const bookingSource = req.body.source || 'Admin Booking';
 
-    // Attempt Real WhatsApp Appointment Confirmation
-    let whatsappResult: WhatsAppSendResult = {
-      success: false,
-      status: 'WhatsApp Not Configured',
-    };
-
-    try {
-      whatsappResult = await sendWhatsAppAppointmentConfirmation({
-        customerName: cust[0].name,
-        customerPhone: cust[0].phone,
-        bookingCode: assignedBookingCode,
-        services: selectedServices.map((s) => ({
-          serviceName: s.name,
-          price: s.price,
-          duration: s.duration,
-        })),
-        staffName: st[0].name,
-        date,
-        startTime,
-        totalDuration: totalDuration,
-        totalAmount,
-        status: req.body.status || 'Booked',
-      });
-    } catch (waErr: any) {
-      whatsappResult = {
-        success: false,
-        status: 'WhatsApp Failed',
-        error: waErr?.message || 'Unexpected WhatsApp error',
-      };
-    }
+    // Dispatch Unified Notification (WhatsApp with automated Twilio SMS fallback)
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
+      customerName: cust[0].name,
+      customerPhone: cust[0].phone,
+      bookingCode: assignedBookingCode,
+      services: selectedServices.map((s) => ({
+        serviceName: s.name,
+        price: s.price,
+        duration: s.duration,
+      })),
+      staffName: st[0].name,
+      date,
+      startTime,
+      totalDuration: totalDuration,
+      totalAmount,
+      status: req.body.status || 'Booked',
+    });
 
     // Insert Appointment
     const apt = await db
@@ -1414,10 +1447,15 @@ apiRouter.post('/appointments', async (req, res) => {
         paymentStatus: 'Pending',
         notes: notes || null,
         totalAmount,
-        whatsappStatus: whatsappResult.status,
-        whatsappMessageId: whatsappResult.messageId || null,
-        whatsappError: whatsappResult.error || null,
-        whatsappSentAt: whatsappResult.success ? new Date() : null,
+        whatsappStatus: notifResult.whatsapp.status,
+        whatsappMessageId: notifResult.whatsapp.messageId || null,
+        whatsappError: notifResult.whatsapp.error || null,
+        whatsappSentAt: notifResult.whatsapp.success ? new Date() : null,
+        smsStatus: notifResult.sms.status,
+        smsMessageId: notifResult.sms.messageId || null,
+        smsError: notifResult.sms.error || null,
+        smsSentAt: notifResult.sms.success ? new Date() : null,
+        notificationChannel: notifResult.activeChannel,
       })
       .returning();
 
@@ -1528,7 +1566,7 @@ apiRouter.delete('/appointments/:id', async (req, res) => {
   }
 });
 
-// Resend real WhatsApp confirmation for an appointment
+// Resend notification for an appointment (primary WhatsApp with automated Twilio SMS fallback)
 apiRouter.post('/appointments/:id/resend-whatsapp', async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -1544,7 +1582,7 @@ apiRouter.post('/appointments/:id/resend-whatsapp', async (req, res) => {
 
     const totalDuration = aptSvcs.reduce((acc, s) => acc + (s.duration || 30), 0);
 
-    const whatsappResult = await sendWhatsAppAppointmentConfirmation({
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
       customerName: apt[0].customerName,
       customerPhone: apt[0].customerPhone,
       bookingCode: apt[0].bookingCode || `APT-${apt[0].id}`,
@@ -1565,14 +1603,19 @@ apiRouter.post('/appointments/:id/resend-whatsapp', async (req, res) => {
       status: apt[0].status,
     });
 
-    // Update appointment record
+    // Update appointment record with delivery statuses
     const updated = await db
       .update(appointments)
       .set({
-        whatsappStatus: whatsappResult.status,
-        whatsappMessageId: whatsappResult.messageId || null,
-        whatsappError: whatsappResult.error || null,
-        whatsappSentAt: whatsappResult.success ? new Date() : null,
+        whatsappStatus: notifResult.whatsapp.status,
+        whatsappMessageId: notifResult.whatsapp.messageId || null,
+        whatsappError: notifResult.whatsapp.error || null,
+        whatsappSentAt: notifResult.whatsapp.success ? new Date() : null,
+        smsStatus: notifResult.sms.status,
+        smsMessageId: notifResult.sms.messageId || null,
+        smsError: notifResult.sms.error || null,
+        smsSentAt: notifResult.sms.success ? new Date() : null,
+        notificationChannel: notifResult.activeChannel,
         updatedAt: new Date(),
       })
       .where(eq(appointments.id, id))
@@ -1580,21 +1623,96 @@ apiRouter.post('/appointments/:id/resend-whatsapp', async (req, res) => {
 
     // Activity Log
     await db.insert(activityLogs).values({
-      action: 'WHATSAPP_CONFIRMATION_SENT',
-      description: `WhatsApp confirmation dispatched for appointment #${id} (${apt[0].customerName}). Status: ${whatsappResult.status}`,
+      action: 'NOTIFICATION_DISPATCHED',
+      description: `Notification dispatched for appointment #${id} (${apt[0].customerName}). ${notifResult.summary}`,
       entityType: 'Appointment',
       entityId: String(id),
     });
 
     res.json({
-      success: whatsappResult.success,
-      status: whatsappResult.status,
-      messageId: whatsappResult.messageId,
-      error: whatsappResult.error,
+      success: notifResult.whatsapp.success || notifResult.sms.success,
+      status: notifResult.whatsapp.status,
+      messageId: notifResult.whatsapp.messageId,
+      error: notifResult.whatsapp.error,
+      whatsapp: notifResult.whatsapp,
+      sms: notifResult.sms,
+      fallbackTriggered: notifResult.fallbackTriggered,
+      activeChannel: notifResult.activeChannel,
+      summary: notifResult.summary,
       appointment: updated[0],
     });
   } catch (error: any) {
-    console.error('Error resending WhatsApp confirmation:', error);
+    console.error('Error resending appointment notification:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Explicitly send / resend Twilio SMS for an appointment
+apiRouter.post('/appointments/:id/resend-sms', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const apt = await db.select().from(appointments).where(eq(appointments.id, id)).limit(1);
+    if (!apt[0]) {
+      return res.status(404).json({ error: 'Appointment not found.' });
+    }
+
+    const aptSvcs = await db
+      .select()
+      .from(appointmentServices)
+      .where(eq(appointmentServices.appointmentId, id));
+
+    const totalDuration = aptSvcs.reduce((acc, s) => acc + (s.duration || 30), 0);
+
+    const smsResult = await sendTwilioSMSAppointmentConfirmation({
+      customerName: apt[0].customerName,
+      customerPhone: apt[0].customerPhone,
+      bookingCode: apt[0].bookingCode || `APT-${apt[0].id}`,
+      services: aptSvcs.length > 0 ? aptSvcs.map((s) => ({
+        serviceName: s.serviceName,
+        price: s.price,
+        duration: s.duration || 30,
+      })) : [{
+        serviceName: 'Salon Appointment',
+        price: apt[0].totalAmount,
+        duration: 30,
+      }],
+      staffName: apt[0].staffName,
+      date: apt[0].date,
+      startTime: apt[0].startTime,
+      totalDuration,
+      totalAmount: apt[0].totalAmount,
+      status: apt[0].status,
+    });
+
+    const updated = await db
+      .update(appointments)
+      .set({
+        smsStatus: smsResult.status,
+        smsMessageId: smsResult.messageId || null,
+        smsError: smsResult.error || null,
+        smsSentAt: smsResult.success ? new Date() : null,
+        notificationChannel: smsResult.success ? 'sms' : (apt[0].notificationChannel || 'whatsapp'),
+        updatedAt: new Date(),
+      })
+      .where(eq(appointments.id, id))
+      .returning();
+
+    await db.insert(activityLogs).values({
+      action: 'SMS_CONFIRMATION_SENT',
+      description: `Twilio SMS dispatched for appointment #${id} (${apt[0].customerName}). Status: ${smsResult.status}`,
+      entityType: 'Appointment',
+      entityId: String(id),
+    });
+
+    res.json({
+      success: smsResult.success,
+      status: smsResult.status,
+      messageId: smsResult.messageId,
+      error: smsResult.error,
+      appointment: updated[0],
+    });
+  } catch (error: any) {
+    console.error('Error resending Twilio SMS:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1608,6 +1726,237 @@ apiRouter.get('/whatsapp/config', (req, res) => {
       ...config,
     });
   } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Diagnostic check of Twilio SMS configuration (secrets safely masked)
+apiRouter.get('/sms/config', (req, res) => {
+  try {
+    const config = getTwilioConfigStatus();
+    res.json({
+      success: true,
+      ...config,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Diagnostic check of unified notification system (WhatsApp + Twilio fallback)
+apiRouter.get('/notifications/config', (req, res) => {
+  try {
+    const config = getNotificationSystemsConfig();
+    res.json({
+      success: true,
+      ...config,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Live ping & test of Meta Graph API connection
+apiRouter.get('/whatsapp/test-connection', async (req, res) => {
+  try {
+    const result = await testMetaWhatsAppConnection();
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({
+      connected: false,
+      status: 'Error',
+      error: error.message,
+    });
+  }
+});
+
+// Live ping & test of Twilio SMS connection
+apiRouter.get('/sms/test-connection', async (req, res) => {
+  try {
+    const result = await testTwilioSMSConnection();
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({
+      connected: false,
+      status: 'Error',
+      error: error.message,
+    });
+  }
+});
+
+// Test Twilio SMS fallback mechanism or direct SMS
+apiRouter.post('/notifications/test-fallback', async (req, res) => {
+  try {
+    const { phone, testMode = 'fallback', customMessage } = req.body;
+    if (!phone) {
+      return res.status(400).json({ error: 'Recipient mobile phone number is required for test' });
+    }
+
+    const startTime = Date.now();
+    const cleanPhone = String(phone).trim();
+    const testBookingCode = `BK-TEST-${Date.now().toString().slice(-4)}`;
+
+    let result: any;
+    if (testMode === 'direct_sms') {
+      const smsPayload = {
+        customerName: 'Admin Tester',
+        customerPhone: cleanPhone,
+        bookingCode: testBookingCode,
+        services: [{ serviceName: 'Veloura Signature Hair Spa', price: 1500, duration: 45 }],
+        staffName: 'Senior Stylist',
+        date: new Date().toISOString().split('T')[0],
+        startTime: '10:30 AM',
+        totalDuration: 45,
+        totalAmount: 1500,
+        status: 'Confirmed (Test)',
+        salonName: 'Veloura 🎀',
+      };
+      const smsRes = await sendTwilioSMSAppointmentConfirmation(smsPayload);
+      result = {
+        success: smsRes.success,
+        testMode: 'direct_sms',
+        activeChannel: smsRes.success ? 'sms' : 'none',
+        fallbackTriggered: false,
+        summary: smsRes.success
+          ? `Direct Twilio SMS sent successfully! (SID: ${smsRes.messageId})`
+          : `Direct Twilio SMS failed: ${smsRes.status} (${smsRes.error || 'Check credentials'})`,
+        sms: smsRes,
+        whatsapp: {
+          success: false,
+          status: 'Bypassed (Direct SMS Test)',
+        },
+      };
+    } else {
+      // Default: Automated Fallback test
+      const aptPayload = {
+        customerName: 'Admin Tester',
+        customerPhone: cleanPhone,
+        bookingCode: testBookingCode,
+        services: [
+          { serviceName: 'Veloura Signature Hair Spa', price: 1500, duration: 45 },
+          { serviceName: 'Classic Manicure', price: 800, duration: 30 },
+        ],
+        staffName: 'Senior Stylist & Spa Specialist',
+        date: new Date().toISOString().split('T')[0],
+        startTime: '10:30 AM',
+        totalDuration: 75,
+        totalAmount: 2300,
+        status: 'Confirmed (Test)',
+      };
+
+      const notifResult = await dispatchAppointmentNotificationWithFallback(aptPayload);
+      result = {
+        ...notifResult,
+        testMode: 'fallback',
+      };
+    }
+
+    const latencyMs = Date.now() - startTime;
+
+    // Record test activity log
+    await db.insert(activityLogs).values({
+      action: 'TEST_NOTIFICATION',
+      description: `Admin executed ${testMode.toUpperCase()} notification test to ${cleanPhone}. Outcome: ${result.summary} (${latencyMs}ms)`,
+      entityType: 'NotificationTest',
+      entityId: testBookingCode,
+    });
+
+    res.json({
+      ...result,
+      phone: cleanPhone,
+      timestamp: new Date().toISOString(),
+      latencyMs,
+    });
+  } catch (error: any) {
+    console.error('Error running notification test:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Recent message delivery logs across appointments & fallback tests
+apiRouter.get('/notifications/logs', async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+
+    const recentAppointments = await db
+      .select({
+        id: appointments.id,
+        bookingCode: appointments.bookingCode,
+        customerName: appointments.customerName,
+        customerPhone: appointments.customerPhone,
+        date: appointments.date,
+        startTime: appointments.startTime,
+        status: appointments.status,
+        totalAmount: appointments.totalAmount,
+        whatsappStatus: appointments.whatsappStatus,
+        whatsappMessageId: appointments.whatsappMessageId,
+        whatsappError: appointments.whatsappError,
+        whatsappSentAt: appointments.whatsappSentAt,
+        smsStatus: appointments.smsStatus,
+        smsMessageId: appointments.smsMessageId,
+        smsError: appointments.smsError,
+        smsSentAt: appointments.smsSentAt,
+        notificationChannel: appointments.notificationChannel,
+        updatedAt: appointments.updatedAt,
+        createdAt: appointments.createdAt,
+      })
+      .from(appointments)
+      .orderBy(desc(appointments.id))
+      .limit(limit);
+
+    const testLogs = await db
+      .select()
+      .from(activityLogs)
+      .where(
+        or(
+          eq(activityLogs.action, 'TEST_NOTIFICATION'),
+          eq(activityLogs.action, 'NOTIFICATION_DISPATCHED'),
+          eq(activityLogs.action, 'SMS_CONFIRMATION_SENT'),
+          eq(activityLogs.action, 'WHATSAPP_CONFIRMATION_SENT')
+        )
+      )
+      .orderBy(desc(activityLogs.id))
+      .limit(25);
+
+    let totalAppointments = recentAppointments.length;
+    let whatsappDelivered = 0;
+    let smsFallbackDelivered = 0;
+    let fallbackTriggered = 0;
+    let pendingOrFailed = 0;
+
+    for (const apt of recentAppointments) {
+      if (apt.whatsappStatus === 'WhatsApp Sent') {
+        whatsappDelivered++;
+      } else if (apt.smsStatus === 'SMS Sent') {
+        smsFallbackDelivered++;
+      } else {
+        pendingOrFailed++;
+      }
+
+      if (
+        apt.smsStatus === 'SMS Sent' ||
+        apt.smsStatus === 'SMS Failed' ||
+        (apt.whatsappStatus && apt.whatsappStatus.includes('Failed')) ||
+        (apt.whatsappStatus && apt.whatsappStatus.includes('Not Configured'))
+      ) {
+        fallbackTriggered++;
+      }
+    }
+
+    res.json({
+      success: true,
+      stats: {
+        totalLogged: totalAppointments,
+        whatsappDelivered,
+        smsFallbackDelivered,
+        fallbackTriggered,
+        pendingOrFailed,
+      },
+      appointments: recentAppointments,
+      activityLogs: testLogs,
+    });
+  } catch (error: any) {
+    console.error('Error fetching notification logs:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -2094,38 +2443,25 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
     const customerNotesPrefix = notes && notes.trim() ? `${notes.trim()}\n\n` : '';
     const structuredNotes = `${customerNotesPrefix}Specialist Assignments:\n${readableAssignments}\n\n<!--SERVICE_ASSIGNMENTS:${JSON.stringify(resolvedAssignments)}-->`;
 
-    // Attempt Real WhatsApp Appointment Confirmation
-    let whatsappResult: WhatsAppSendResult = {
-      success: false,
-      status: 'WhatsApp Not Configured',
-    };
+    // Dispatch Unified Notification (WhatsApp with automated Twilio SMS fallback)
+    const notifResult = await dispatchAppointmentNotificationWithFallback({
+      customerName: customerName.trim(),
+      customerPhone: cleanPhone,
+      bookingCode,
+      services: selectedServices.map((s) => ({
+        serviceName: s.name,
+        price: s.price,
+        duration: s.duration || 30,
+      })),
+      staffName: aggregateStaffName,
+      date,
+      startTime,
+      totalDuration: duration,
+      totalAmount,
+      status: 'Confirmed',
+    });
 
-    try {
-      whatsappResult = await sendWhatsAppAppointmentConfirmation({
-        customerName: customerName.trim(),
-        customerPhone: cleanPhone,
-        bookingCode,
-        services: selectedServices.map((s) => ({
-          serviceName: s.name,
-          price: s.price,
-          duration: s.duration || 30,
-        })),
-        staffName: aggregateStaffName,
-        date,
-        startTime,
-        totalDuration: duration,
-        totalAmount,
-        status: 'Confirmed',
-      });
-    } catch (waErr: any) {
-      whatsappResult = {
-        success: false,
-        status: 'WhatsApp Failed',
-        error: waErr?.message || 'Unexpected WhatsApp error',
-      };
-    }
-
-    // Insert Appointment with real WhatsApp delivery tracking
+    // Insert Appointment with notification delivery tracking
     const apt = await db
       .insert(appointments)
       .values({
@@ -2144,10 +2480,15 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
         paymentStatus: 'Pending',
         notes: structuredNotes,
         totalAmount,
-        whatsappStatus: whatsappResult.status,
-        whatsappMessageId: whatsappResult.messageId || null,
-        whatsappError: whatsappResult.error || null,
-        whatsappSentAt: whatsappResult.success ? new Date() : null,
+        whatsappStatus: notifResult.whatsapp.status,
+        whatsappMessageId: notifResult.whatsapp.messageId || null,
+        whatsappError: notifResult.whatsapp.error || null,
+        whatsappSentAt: notifResult.whatsapp.success ? new Date() : null,
+        smsStatus: notifResult.sms.status,
+        smsMessageId: notifResult.sms.messageId || null,
+        smsError: notifResult.sms.error || null,
+        smsSentAt: notifResult.sms.success ? new Date() : null,
+        notificationChannel: notifResult.activeChannel,
       })
       .returning();
 
@@ -2175,7 +2516,7 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
     // Activity Log
     await db.insert(activityLogs).values({
       action: 'ONLINE_BOOKING',
-      description: `Online booking #${apt[0].id} (${bookingCode}) by ${customerName.trim()} for ${serviceSummary} with specialists: ${aggregateStaffName}`,
+      description: `Online booking #${apt[0].id} (${bookingCode}) by ${customerName.trim()} for ${serviceSummary} with specialists: ${aggregateStaffName}. ${notifResult.summary}`,
       entityType: 'Appointment',
       entityId: String(apt[0].id),
     });
@@ -2189,9 +2530,15 @@ apiRouter.post('/appointments/online-book', async (req, res) => {
       staff: primaryStaff,
       serviceAssignments: resolvedAssignments,
       allAssignedStaff: Array.from(usedStaffIdsInThisBooking).map((id) => allActiveStaff.find((st) => st.id === id)),
-      whatsappStatus: whatsappResult.status,
-      whatsappMessageId: whatsappResult.messageId,
-      whatsappError: whatsappResult.error,
+      whatsappStatus: notifResult.whatsapp.status,
+      whatsappMessageId: notifResult.whatsapp.messageId,
+      whatsappError: notifResult.whatsapp.error,
+      smsStatus: notifResult.sms.status,
+      smsMessageId: notifResult.sms.messageId,
+      smsError: notifResult.sms.error,
+      fallbackTriggered: notifResult.fallbackTriggered,
+      notificationChannel: notifResult.activeChannel,
+      notificationSummary: notifResult.summary,
     });
   } catch (error: any) {
     console.error('Online booking error:', error);

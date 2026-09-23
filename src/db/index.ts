@@ -1,5 +1,6 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { Pool, PoolConfig } from 'pg';
+import { Pool } from 'pg';
+import type { PoolConfig } from 'pg';
 import * as schema from './schema.ts';
 
 declare global {
@@ -196,15 +197,18 @@ export const createPool = (): Pool => {
     }
 
     // Configured for Supabase Transaction Pooler (PgBouncer) and Vercel serverless:
-    // 1. Application-side pool kept small (max 2) to prevent connection starvation
-    // 2. SSL required for remote Supabase pooler
-    // 3. Fast idle timeouts so serverless instances don't hoard connections
+    // 1. Application-side pool kept compact (max 3 in prod) to prevent connection starvation
+    // 2. SSL required for remote Supabase pooler with rejectUnauthorized: false
+    // 3. search_path explicitly set to public for all queries
+    // 4. Fast idle timeouts so serverless instances don't hoard connections
     poolConfig = {
       connectionString,
       ssl: isLocal ? false : { rejectUnauthorized: false },
-      max: isProduction ? 2 : 10,
-      connectionTimeoutMillis: 10000,
+      max: isProduction ? 3 : 10,
+      connectionTimeoutMillis: 15000,
       idleTimeoutMillis: 10000,
+      options: '-c search_path=public',
+      allowExitOnIdle: true,
     };
   } else {
     const host =
@@ -249,20 +253,44 @@ export const createPool = (): Pool => {
         getCleanEnvVar('PGDATABASE') ||
         getCleanEnvVar('SQL_DB_NAME'),
       ssl: isUnixSocket || isLocal ? false : { rejectUnauthorized: false },
-      max: isProduction ? 2 : 10,
-      connectionTimeoutMillis: 10000,
+      max: isProduction ? 3 : 10,
+      connectionTimeoutMillis: 15000,
       idleTimeoutMillis: 10000,
+      options: '-c search_path=public',
+      allowExitOnIdle: true,
     };
   }
 
   const pool = new Pool(poolConfig);
 
+  pool.on('connect', (client) => {
+    // Explicitly enforce public schema search_path on each newly checked-out client
+    client.query('SET search_path TO public, "$user"').catch(() => {});
+  });
+
   pool.on('error', (err) => {
     console.error('Unexpected error on idle SQL pool client:', err);
+    // If connection dropped or terminated, reset cached pool so subsequent requests reconnect
+    const code = (err as any)?.code;
+    const msg = (err as any)?.message || '';
+    if (code === 'ECONNRESET' || code === '57P01' || msg.includes('terminated') || msg.includes('closed')) {
+      global._postgresPool = undefined;
+      global._drizzleDb = undefined;
+    }
   });
 
   global._postgresPool = pool;
   return pool;
+};
+
+export const resetPool = async () => {
+  if (global._postgresPool) {
+    try {
+      await global._postgresPool.end().catch(() => {});
+    } catch {}
+    global._postgresPool = undefined;
+    global._drizzleDb = undefined;
+  }
 };
 
 export const getDb = () => {
