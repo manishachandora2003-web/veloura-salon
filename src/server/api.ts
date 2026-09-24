@@ -1250,7 +1250,7 @@ apiRouter.get('/staff', async (req, res) => {
 apiRouter.post('/staff', async (req, res) => {
   try {
     if (!requireAdminAuth(req, res)) return;
-    const { staffCode, name, phone, email, role, specialization, joiningDate, salary, commissionPercentage, workingDays, workingHours } = req.body;
+    const { staffCode, name, gender, phone, email, role, specialization, joiningDate, salary, commissionPercentage, workingDays, workingHours } = req.body;
     if (!name || !phone) {
       return res.status(400).json({ error: 'Staff name and phone are required.' });
     }
@@ -1265,6 +1265,7 @@ apiRouter.post('/staff', async (req, res) => {
       .values({
         staffCode: staffCode || `STF-${Date.now().toString().slice(-4)}`,
         name,
+        gender: gender || 'Female',
         phone,
         email: email || null,
         role: role || 'Hair Stylist',
@@ -1301,6 +1302,7 @@ apiRouter.put('/staff/:id', async (req, res) => {
       .set({
         ...body,
         staffCode: body.staffCode !== undefined ? body.staffCode : undefined,
+        gender: body.gender !== undefined ? body.gender : undefined,
         salary: body.salary !== undefined ? Number(body.salary) : undefined,
         commissionPercentage: body.commissionPercentage !== undefined ? Number(body.commissionPercentage) : undefined,
         isActive: body.isActive !== undefined ? Boolean(body.isActive) : undefined,

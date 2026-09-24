@@ -27,7 +27,7 @@ import {
 } from './schema.ts';
 import { PREDEFINED_CATEGORIES, PREDEFINED_SERVICES } from './predefined-services.ts';
 import { INITIAL_35_STAFF } from './initial-staff.ts';
-import { eq, and, sql, notInArray, desc } from 'drizzle-orm';
+import { eq, and, ne, sql, notInArray, desc } from 'drizzle-orm';
 
 /**
  * Ensures all required relational database tables exist (idempotent DDL).
@@ -610,6 +610,22 @@ export async function initializeDatabase() {
         }));
         await db.insert(staff).values(staffToInsert);
         console.log(`Inserted ${staffToInsert.length} missing staff members.`);
+      }
+
+      // Safely ensure each initial staff record has their accurate gender set if previously defaulted to Female
+      for (const st of INITIAL_35_STAFF) {
+        if (st.gender && st.staffCode) {
+          await db
+            .update(staff)
+            .set({ gender: st.gender })
+            .where(
+              and(
+                eq(staff.staffCode, st.staffCode),
+                ne(staff.gender, st.gender)
+              )
+            )
+            .catch(() => {});
+        }
       }
     }
 

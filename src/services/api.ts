@@ -180,17 +180,17 @@ export const api = {
   deleteCustomer: (id: number) => fetch(`${API_BASE}/customers/${id}`, { method: 'DELETE' }).then((r) => handleResponse<{ success: boolean }>(r)),
 
   // Staff
-  getStaff: () => fetch(`${API_BASE}/staff`).then((r) => handleResponse<StaffMember[]>(r)),
+  getStaff: () => fetch(`${API_BASE}/staff`, { headers: getHeaders() }).then((r) => handleResponse<StaffMember[]>(r)),
   createStaff: (data: Partial<StaffMember>) =>
     fetch(`${API_BASE}/staff`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getHeaders(),
       body: JSON.stringify(data),
     }).then((r) => handleResponse<StaffMember>(r)),
   updateStaff: (id: number, data: Partial<StaffMember>) =>
     fetch(`${API_BASE}/staff/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getHeaders(),
       body: JSON.stringify(data),
     }).then((r) => handleResponse<StaffMember>(r)),
 

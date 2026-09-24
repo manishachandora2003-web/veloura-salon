@@ -26,6 +26,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MUA-001',
     name: 'Ananya Sen',
+    gender: 'Female',
     phone: '+91 98451 10001',
     email: 'ananya.sen@veloura.in',
     role: 'Makeup Artist',
@@ -40,6 +41,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MUA-002',
     name: 'Rohan Kapoor',
+    gender: 'Male',
     phone: '+91 98451 10002',
     email: 'rohan.kapoor@veloura.in',
     role: 'Makeup Artist',
@@ -54,6 +56,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MUA-003',
     name: 'Shreya Mukherjee',
+    gender: 'Female',
     phone: '+91 98451 10003',
     email: 'shreya.mukherjee@veloura.in',
     role: 'Makeup Artist',
@@ -68,6 +71,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MUA-004',
     name: 'Kabir Mehta',
+    gender: 'Male',
     phone: '+91 98451 10004',
     email: 'kabir.mehta@veloura.in',
     role: 'Makeup Artist',
@@ -82,6 +86,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MUA-005',
     name: 'Tanvi Deshmukh',
+    gender: 'Female',
     phone: '+91 98451 10005',
     email: 'tanvi.deshmukh@veloura.in',
     role: 'Makeup Artist',
@@ -98,6 +103,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HRS-006',
     name: 'Vikram Malhotra',
+    gender: 'Male',
     phone: '+91 98452 20006',
     email: 'vikram.malhotra@veloura.in',
     role: 'Hair Stylist',
@@ -112,6 +118,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HRS-007',
     name: 'Pooja Sharma',
+    gender: 'Female',
     phone: '+91 98452 20007',
     email: 'pooja.sharma@veloura.in',
     role: 'Hair Stylist',
@@ -126,6 +133,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HRS-008',
     name: 'Arjun Nair',
+    gender: 'Male',
     phone: '+91 98452 20008',
     email: 'arjun.nair@veloura.in',
     role: 'Hair Stylist',
@@ -140,6 +148,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HRS-009',
     name: 'Divya Joshi',
+    gender: 'Female',
     phone: '+91 98452 20009',
     email: 'divya.joshi@veloura.in',
     role: 'Hair Stylist',
@@ -154,6 +163,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HRS-010',
     name: 'Sameer Kulkarni',
+    gender: 'Male',
     phone: '+91 98452 20010',
     email: 'sameer.kulkarni@veloura.in',
     role: 'Hair Stylist',
@@ -170,6 +180,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-WTS-011',
     name: 'Sunita Verma',
+    gender: 'Female',
     phone: '+91 98453 30011',
     email: 'sunita.verma@veloura.in',
     role: 'Waxing & Threading Specialist',
@@ -184,6 +195,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-WTS-012',
     name: 'Manpreet Kaur',
+    gender: 'Female',
     phone: '+91 98453 30012',
     email: 'manpreet.kaur@veloura.in',
     role: 'Waxing & Threading Specialist',
@@ -198,6 +210,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-WTS-013',
     name: 'Rajesh Guha',
+    gender: 'Male',
     phone: '+91 98453 30013',
     email: 'rajesh.guha@veloura.in',
     role: 'Waxing & Threading Specialist',
@@ -212,6 +225,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-WTS-014',
     name: 'Rekha Patil',
+    gender: 'Female',
     phone: '+91 98453 30014',
     email: 'rekha.patil@veloura.in',
     role: 'Waxing & Threading Specialist',
@@ -226,6 +240,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-WTS-015',
     name: 'Deepak Chauhan',
+    gender: 'Male',
     phone: '+91 98453 30015',
     email: 'deepak.chauhan@veloura.in',
     role: 'Waxing & Threading Specialist',
@@ -242,6 +257,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-FSH-016',
     name: 'Aakash Singhania',
+    gender: 'Male',
     phone: '+91 98454 40016',
     email: 'aakash.singhania@veloura.in',
     role: 'Fashion Stylist',
@@ -256,6 +272,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-FSH-017',
     name: 'Meera Nambiar',
+    gender: 'Female',
     phone: '+91 98454 40017',
     email: 'meera.nambiar@veloura.in',
     role: 'Fashion Stylist',
@@ -270,6 +287,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-FSH-018',
     name: 'Siddharth Roy',
+    gender: 'Male',
     phone: '+91 98454 40018',
     email: 'siddharth.roy@veloura.in',
     role: 'Fashion Stylist',
@@ -284,6 +302,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-FSH-019',
     name: 'Natasha D\'Souza',
+    gender: 'Female',
     phone: '+91 98454 40019',
     email: 'natasha.dsouza@veloura.in',
     role: 'Fashion Stylist',
@@ -298,6 +317,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-FSH-020',
     name: 'Varun Bhatia',
+    gender: 'Male',
     phone: '+91 98454 40020',
     email: 'varun.bhatia@veloura.in',
     role: 'Fashion Stylist',
@@ -314,6 +334,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HLP-021',
     name: 'Ramesh Yadav',
+    gender: 'Male',
     phone: '+91 98455 50021',
     email: 'ramesh.yadav@veloura.in',
     role: 'Helper',
@@ -328,6 +349,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HLP-022',
     name: 'Geeta Devi',
+    gender: 'Female',
     phone: '+91 98455 50022',
     email: 'geeta.devi@veloura.in',
     role: 'Helper',
@@ -342,6 +364,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HLP-023',
     name: 'Suresh Paswan',
+    gender: 'Male',
     phone: '+91 98455 50023',
     email: 'suresh.paswan@veloura.in',
     role: 'Helper',
@@ -356,6 +379,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HLP-024',
     name: 'Lakshmi Bai',
+    gender: 'Female',
     phone: '+91 98455 50024',
     email: 'lakshmi.bai@veloura.in',
     role: 'Helper',
@@ -370,6 +394,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-HLP-025',
     name: 'Mohan Lal',
+    gender: 'Male',
     phone: '+91 98455 50025',
     email: 'mohan.lal@veloura.in',
     role: 'Helper',
@@ -386,6 +411,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MPS-026',
     name: 'Priya Raghavan',
+    gender: 'Female',
     phone: '+91 98456 60026',
     email: 'priya.raghavan@veloura.in',
     role: 'Manicure & Pedicure Specialist',
@@ -400,6 +426,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MPS-027',
     name: 'Nitin Choudhary',
+    gender: 'Male',
     phone: '+91 98456 60027',
     email: 'nitin.choudhary@veloura.in',
     role: 'Manicure & Pedicure Specialist',
@@ -414,6 +441,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MPS-028',
     name: 'Neha Agarwal',
+    gender: 'Female',
     phone: '+91 98456 60028',
     email: 'neha.agarwal@veloura.in',
     role: 'Manicure & Pedicure Specialist',
@@ -428,6 +456,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MPS-029',
     name: 'Karan Bhatt',
+    gender: 'Male',
     phone: '+91 98456 60029',
     email: 'karan.bhatt@veloura.in',
     role: 'Manicure & Pedicure Specialist',
@@ -442,6 +471,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-MPS-030',
     name: 'Shalini Pillai',
+    gender: 'Female',
     phone: '+91 98456 60030',
     email: 'shalini.pillai@veloura.in',
     role: 'Manicure & Pedicure Specialist',
@@ -458,6 +488,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-SPA-031',
     name: 'Aditya Kashyap',
+    gender: 'Male',
     phone: '+91 98457 70031',
     email: 'aditya.kashyap@veloura.in',
     role: 'Spa Specialist',
@@ -472,6 +503,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-SPA-032',
     name: 'Swati Hegde',
+    gender: 'Female',
     phone: '+91 98457 70032',
     email: 'swati.hegde@veloura.in',
     role: 'Spa Specialist',
@@ -486,6 +518,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-SPA-033',
     name: 'Nikhil Trivedi',
+    gender: 'Male',
     phone: '+91 98457 70033',
     email: 'nikhil.trivedi@veloura.in',
     role: 'Spa Specialist',
@@ -500,6 +533,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-SPA-034',
     name: 'Bhavna Goswami',
+    gender: 'Female',
     phone: '+91 98457 70034',
     email: 'bhavna.goswami@veloura.in',
     role: 'Spa Specialist',
@@ -514,6 +548,7 @@ export const INITIAL_35_STAFF: InitialStaffData[] = [
   {
     staffCode: 'STF-SPA-035',
     name: 'Tarun Somani',
+    gender: 'Male',
     phone: '+91 98457 70035',
     email: 'tarun.somani@veloura.in',
     role: 'Spa Specialist',

@@ -163,18 +163,18 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
   const [activeStaffList, setActiveStaffList] = useState<StaffMember[]>(staffList);
 
   useEffect(() => {
-    if (staffList && staffList.length >= 35) {
+    if (staffList && staffList.length > 0) {
       setActiveStaffList(staffList);
-    } else {
-      api
-        .getPublicStaff()
-        .then((res) => {
-          if (res && res.length > 0) {
-            setActiveStaffList(res as StaffMember[]);
-          }
-        })
-        .catch(() => {});
     }
+    // Fetch public staff to ensure all staff members have the most accurate, live gender data
+    api
+      .getPublicStaff()
+      .then((res) => {
+        if (res && res.length > 0) {
+          setActiveStaffList(res as StaffMember[]);
+        }
+      })
+      .catch(() => {});
   }, [staffList]);
 
   // Active services fallback (ensures persistent Veloura 🎀 services are loaded)
@@ -1073,6 +1073,7 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                             {/* 2. Eligible Specialists */}
                             {eligible.map((staff) => {
                               const isAssigned = assignedStaffId === staff.id;
+                              const isMale = (staff.gender || '').trim().toLowerCase() === 'male';
                               return (
                                 <div
                                   key={staff.id}
@@ -1087,7 +1088,7 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                                     <div className="flex items-center space-x-2.5 min-w-0">
                                       <div
                                         className={`h-9 w-9 rounded-full flex items-center justify-center font-black text-xs shrink-0 ${
-                                          staff.gender === 'Male'
+                                          isMale
                                             ? 'bg-indigo-50 text-indigo-800 border border-indigo-200'
                                             : 'bg-pink-100 text-rose-800 border border-pink-200'
                                         }`}
@@ -1117,7 +1118,7 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                                   <div className="mt-2 pt-2 border-t border-pink-100/80 flex items-center justify-between text-[10px]">
                                     <span
                                       className={`px-1.5 py-0.2 rounded font-bold ${
-                                        staff.gender === 'Male'
+                                        isMale
                                           ? 'bg-indigo-50 text-indigo-700'
                                           : 'bg-rose-50 text-rose-700'
                                       }`}
@@ -2037,7 +2038,7 @@ export const PublicBookingPortal: React.FC<PublicBookingPortalProps> = ({
                         {b.serviceAssignments.map((sa: any, sIdx: number) => (
                           <div key={sIdx} className="flex justify-between items-center text-[#2d1822] text-[11px] bg-pink-50/30 p-1.5 rounded-lg">
                             <span>{sa.serviceName}</span>
-                            <span className="font-bold text-rose-700">{sa.staffName} ({sa.role})</span>
+                            <span className="font-bold text-rose-700">{sa.staffName} ({sa.role}{sa.gender ? ` • ${sa.gender}` : ''})</span>
                           </div>
                         ))}
                       </div>

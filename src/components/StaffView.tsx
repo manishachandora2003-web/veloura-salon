@@ -120,6 +120,7 @@ export const StaffView: React.FC<StaffViewProps> = ({ staffList, onRefreshData }
   // Form State
   const [staffCode, setStaffCode] = useState('');
   const [name, setName] = useState('');
+  const [gender, setGender] = useState<'Female' | 'Male' | string>('Female');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('Hair Stylist');
@@ -191,6 +192,7 @@ export const StaffView: React.FC<StaffViewProps> = ({ staffList, onRefreshData }
 
     setStaffCode(`${config.codePrefix}-${nextNum}`);
     setName('');
+    setGender('Female');
     setPhone('');
     setEmail('');
     setRole(defaultRole);
@@ -206,6 +208,7 @@ export const StaffView: React.FC<StaffViewProps> = ({ staffList, onRefreshData }
     setEditingStaff(st);
     setStaffCode(st.staffCode || `STF-${String(st.id).padStart(3, '0')}`);
     setName(st.name);
+    setGender(st.gender || 'Female');
     setPhone(st.phone);
     setEmail(st.email || '');
     setRole(st.role);
@@ -227,6 +230,7 @@ export const StaffView: React.FC<StaffViewProps> = ({ staffList, onRefreshData }
         await api.updateStaff(editingStaff.id, {
           staffCode: staffCode.trim() || undefined,
           name: name.trim(),
+          gender,
           phone: phone.trim(),
           email: email.trim() || undefined,
           role,
@@ -240,6 +244,7 @@ export const StaffView: React.FC<StaffViewProps> = ({ staffList, onRefreshData }
         await api.createStaff({
           staffCode: staffCode.trim() || undefined,
           name: name.trim(),
+          gender,
           phone: phone.trim(),
           email: email.trim() || undefined,
           role,
@@ -441,6 +446,10 @@ export const StaffView: React.FC<StaffViewProps> = ({ staffList, onRefreshData }
                         <div className="flex items-center space-x-1.5 mt-0.5">
                           <RoleIcon className={`h-3 w-3 ${cfg.color}`} />
                           <span className={`text-xs font-semibold ${cfg.color}`}>{st.role}</span>
+                          <span className="text-slate-300">•</span>
+                          <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${(st.gender || '').toLowerCase() === 'male' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                            {st.gender || 'Female'}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -551,23 +560,37 @@ export const StaffView: React.FC<StaffViewProps> = ({ staffList, onRefreshData }
             </p>
 
             <form onSubmit={handleSaveStaff} className="space-y-3.5 text-xs">
-              {/* Category & Role Selector */}
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Role / Category *</label>
-                <select
-                  id="staff-form-role-select"
-                  value={role}
-                  onChange={(e) => handleRoleChange(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-amber-500 focus:outline-hidden"
-                >
-                  <option value="Makeup Artist">Makeup Artist (5% Commission)</option>
-                  <option value="Hair Stylist">Hair Stylist (5% Commission)</option>
-                  <option value="Waxing & Threading Specialist">Waxing & Threading Specialist (5% Commission)</option>
-                  <option value="Fashion Stylist">Fashion Stylist (5% Commission)</option>
-                  <option value="Manicure & Pedicure Specialist">Manicure & Pedicure Specialist (5% Commission)</option>
-                  <option value="Spa Specialist">Spa Specialist (5% Commission)</option>
-                  <option value="Helper">Helper (4% Commission)</option>
-                </select>
+              {/* Category & Role & Gender Selector */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Role / Category *</label>
+                  <select
+                    id="staff-form-role-select"
+                    value={role}
+                    onChange={(e) => handleRoleChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-amber-500 focus:outline-hidden"
+                  >
+                    <option value="Makeup Artist">Makeup Artist (5% Commission)</option>
+                    <option value="Hair Stylist">Hair Stylist (5% Commission)</option>
+                    <option value="Waxing & Threading Specialist">Waxing & Threading Specialist (5% Commission)</option>
+                    <option value="Fashion Stylist">Fashion Stylist (5% Commission)</option>
+                    <option value="Manicure & Pedicure Specialist">Manicure & Pedicure Specialist (5% Commission)</option>
+                    <option value="Spa Specialist">Spa Specialist (5% Commission)</option>
+                    <option value="Helper">Helper (4% Commission)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Gender *</label>
+                  <select
+                    id="staff-form-gender-select"
+                    value={gender}
+                    onChange={(e) => setGender(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-amber-500 focus:outline-hidden"
+                  >
+                    <option value="Female">Female</option>
+                    <option value="Male">Male</option>
+                  </select>
+                </div>
               </div>
 
               {/* Staff ID and Name */}
