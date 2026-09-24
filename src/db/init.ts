@@ -560,6 +560,23 @@ export async function initializeDatabase() {
         await db.insert(services).values(servicesToInsert);
         console.log(`Inserted ${servicesToInsert.length} missing predefined services.`);
       }
+
+      // Ensure any stale service pricing is synchronized with current authoritative pricing
+      for (const predefined of PREDEFINED_SERVICES) {
+        const match = existingServices.find(
+          (e) => e.name.trim().toLowerCase() === predefined.name.trim().toLowerCase()
+        );
+        if (match && match.price !== predefined.price) {
+          await db
+            .update(services)
+            .set({
+              price: predefined.price,
+              duration: predefined.duration,
+              updatedAt: new Date(),
+            })
+            .where(eq(services.id, match.id));
+        }
+      }
     }
 
     // 4. Preserve the required 35 staff structure across 7 categories

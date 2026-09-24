@@ -21,7 +21,24 @@ import {
   ReportsData,
 } from '../types.ts';
 
-const API_BASE = '/api';
+export function getApiBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const origin = window.location.origin;
+    const isPackagedContext =
+      window.location.protocol === 'file:' ||
+      origin.includes('androidplatform') ||
+      origin.includes('capacitor') ||
+      (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '');
+
+    const backendUrl = ((import.meta as any).env?.VITE_APP_URL || '').replace(/\/$/, '');
+    if (isPackagedContext && backendUrl) {
+      return `${backendUrl}/api`;
+    }
+  }
+  return '/api';
+}
+
+const API_BASE = getApiBaseUrl();
 
 let authToken: string | null = typeof window !== 'undefined' ? localStorage.getItem('veloura_auth_token') : null;
 

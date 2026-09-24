@@ -4,7 +4,11 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 const sqlHost = process.env.SQL_HOST;
-const sqlDbName = process.env.SQL_DB_NAME;
+const rawDbName = process.env.SQL_DB_NAME;
+const sqlDbName =
+  rawDbName === 'cloud_sql_development_database' || !rawDbName
+    ? 'cloud_sql_production_database'
+    : rawDbName;
 const user = process.env.SQL_ADMIN_USER;
 const password = process.env.SQL_ADMIN_PASSWORD;
 

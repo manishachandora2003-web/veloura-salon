@@ -57,6 +57,17 @@ import {
 
 export const apiRouter = Router();
 
+// Enable CORS for Android APK, PWA, and cross-origin requests
+apiRouter.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-veloura-token');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Auto-initialize on first request
 let isInitialized = false;
 let initPromise: Promise<void> | null = null;

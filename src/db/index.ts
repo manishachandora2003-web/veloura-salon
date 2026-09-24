@@ -248,10 +248,16 @@ export const createPool = (): Pool => {
         getCleanEnvVar('POSTGRES_PASSWORD') ||
         getCleanEnvVar('PGPASSWORD') ||
         getCleanEnvVar('SQL_PASSWORD'),
-      database:
-        getCleanEnvVar('POSTGRES_DATABASE') ||
-        getCleanEnvVar('PGDATABASE') ||
-        getCleanEnvVar('SQL_DB_NAME'),
+      database: (() => {
+        const direct = getCleanEnvVar('POSTGRES_DATABASE') || getCleanEnvVar('PGDATABASE');
+        if (direct) return direct;
+        const sqlDb = getCleanEnvVar('SQL_DB_NAME');
+        // Ensure both development/Android environments and published web app connect to the same authoritative live database
+        if (sqlDb === 'cloud_sql_development_database' || !sqlDb) {
+          return 'cloud_sql_production_database';
+        }
+        return sqlDb;
+      })(),
       ssl: isUnixSocket || isLocal ? false : { rejectUnauthorized: false },
       max: isProduction ? 3 : 10,
       connectionTimeoutMillis: 15000,
